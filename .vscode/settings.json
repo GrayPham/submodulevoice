@@ -1,0 +1,34 @@
+{
+  // omnivoice.cpp là bản clone của repo upstream, có .git riêng nên VS Code
+  // mở nó thành một repo thứ hai trong Source Control. Ta không bao giờ commit
+  // vào đó — chỉ clone về để build — nên ẩn đi cho khỏi nhầm với repo của mình.
+  //
+  // Muốn cập nhật upstream thì vẫn chạy được bằng dòng lệnh:
+  //     git -C omnivoice.cpp pull
+  "git.ignoredRepositories": [
+    "omnivoice.cpp",
+    "./omnivoice.cpp"
+  ],
+
+  // Không tự dò repo con khi mở file trong đó.
+  "git.detectSubmodules": false,
+
+  // Ẩn luôn khỏi cây thư mục và khỏi tìm kiếm: đây là nguồn ngoài và các
+  // thư mục sinh ra khi chạy, không phải mã nguồn của dự án.
+  "files.exclude": {
+    "**/__pycache__": true
+  },
+  "search.exclude": {
+    "omnivoice.cpp/**": true,
+    "output/**": true,
+    "packaging/dist/**": true,
+    "packaging/build/**": true,
+    "packaging/.venv/**": true,
+    "ket-qua/**": true
+  },
+  "files.watcherExclude": {
+    "**/omnivoice.cpp/build*/**": true,
+    "**/output/**": true,
+    "**/packaging/dist/**": true
+  }
+}
