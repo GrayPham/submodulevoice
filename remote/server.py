@@ -33,6 +33,7 @@ import queue
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -105,7 +106,7 @@ class Pool:
         mảng numpy chỉ đọc, chia sẻ giữa các luồng an toàn.
         """
         vid = uuid.uuid4().hex[:12]
-        tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"ref-{vid}.wav"
+        tmp = Path(tempfile.gettempdir()) / f"ref-{vid}.wav"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         Audio(pcm).save(tmp)
         try:

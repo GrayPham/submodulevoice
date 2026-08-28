@@ -743,6 +743,74 @@ Kiến trúc GPU: `build-win.cmd cuda` mặc định build
 `61-virtual;61-real;75-real;86-real;89-real` — GTX 1050 trở lên. Một kiến trúc
 đơn lẻ chỉ chạy trên đúng dòng card đó, không phát hành được.
 
+---
+
+## 9. Chạy GPU từ xa (Colab) — client/server
+
+Máy yếu ở nhà gọi lên GPU Colab. Chỉ client/server, không giao diện.
+
+```bash
+# Trên Colab: mở colab/OmniVoice_Server_Colab.ipynb, chạy 6 ô từ trên xuống
+# Nó clone repo này, build omnivoice.cpp, tải model INT4, bật server,
+# mở cloudflared rồi in ra URL + API key.
+
+# Ở máy mình:
+python remote/client.py --url https://xxx.trycloudflare.com --key KEY ^
+    --script scripts/kichban_pt.txt ^
+    --ref output/refs3/FDown...-ref.wav --lang Portuguese ^
+    --concurrency 4 -o output/remote/ket-qua.wav
+```
+
+### Đặt bao nhiêu worker — số đo, không phải phỏng đoán
+
+`examples/bench_parallel.py`, RTX 4000 Ada, mỗi worker một `ov_context` riêng:
+
+| worker | tăng tốc | VRAM | mỗi worker | audio so với 1 luồng |
+|---:|---:|---:|---:|---|
+| 1 | 1.00x | 1443 MiB | 1443 | mốc chuẩn |
+| 2 | 1.80x | 2452 MiB | 1226 | **giống hệt từng byte** |
+| **4** | **2.60x** | 4802 MiB | 1200 | **giống hệt từng byte** |
+| 6 | 0.99x | 7140 MiB | 1190 | giống hệt từng byte |
+| 8 | 0.94x | 9440 MiB | 1180 | giống hệt từng byte |
+
+Hai kết luận, cả hai đều đã đưa vào mã:
+
+1. **Chia luồng không đổi chất lượng.** Băm SHA1 nội dung audio khớp 100% với
+   bản chạy tuần tự cùng seed, ở mọi mức worker. Đây là điều phải chứng minh
+   trước khi dám song song hoá, không phải giả định.
+2. **4 là điểm tối ưu, quá 4 thì chậm đi.** GPU đã bão hoà; thêm worker chỉ
+   tốn VRAM và làm nặng bộ lập lịch. Server mặc định 4 và tự hạ xuống nếu VRAM
+   không đủ (`VRAM_PER_WORKER_MIB = 1250`).
+
+### Kết quả chạy thật (server + client trên cùng máy)
+
+Kịch bản tiếng Bồ 1172 ký tự, 5 đoạn, 4 luồng:
+
+```
+74.5s audio trong 6.9s = 10.79x realtime
+GPU tính 19.4s, chờ hàng đợi 0.0s
+tăng tốc nhờ chia luồng: 2.81x so với gọi tuần tự
+```
+
+### API
+
+| route | việc |
+|---|---|
+| `GET /health` | GPU, số worker, hàng đợi, throughput tích luỹ — không cần key |
+| `POST /voice` | đăng ký giọng mẫu (wav base64 + transcript) → `voice_id` |
+| `POST /tts` | `{voice_id, text, lang, steps, seed}` → WAV, kèm header đo thời gian |
+
+Giọng mẫu chỉ mã hoá RVQ **một lần** rồi giữ trong bộ nhớ; các lần gọi sau chỉ
+gửi `voice_id`, không đẩy file WAV qua mạng mỗi câu. Client tự xếp lại kết quả
+theo chỉ số đoạn nên thứ tự đầu ra luôn đúng dù mạng trả về lộn xộn, và nếu
+thiếu đoạn nào thì **không ghép file** để bạn không nhận nhầm bản thiếu.
+
+### Điều cần biết trước khi dựa vào Colab
+
+Phiên tự ngắt sau vài giờ và `/content` mất theo — bật `USE_DRIVE_CACHE` ở ô 2
+thì lần sau khỏi build lại 8–15 phút. URL cloudflared đổi mỗi lần chạy lại.
+Nếu cần chạy ổn định lâu dài thì thuê GPU theo giờ (vast.ai, runpod) hợp hơn.
+
 ## Nguồn
 
 - Model: [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice) — Apache 2.0
