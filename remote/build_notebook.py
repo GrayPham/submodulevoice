@@ -335,7 +335,7 @@ except Exception as e:
 
 # --- buoc 2: duong ham -------------------------------------------------------
 if server_ok:
-    print(f"\n[2/2] goi qua duong ham {URL} ...", flush=True)
+    print(f"\\n[2/2] goi qua duong ham {URL} ...", flush=True)
     try:
         _w, s2, a2, rtt2 = call(URL)
         print(f"  OK — khu hoi {rtt2:.2f}s, trong do GPU {s2:.2f}s, "

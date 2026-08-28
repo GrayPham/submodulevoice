@@ -53,7 +53,11 @@ def http(url: str, key: str, path: str, payload: dict | None = None,
         data = json.dumps(payload).encode("utf-8")
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, data=data, timeout=timeout) as r:
-        return r.read(), dict(r.headers)
+        # Ha het ten header ve chu thuong. cloudflared proxy qua HTTP/2, ma
+        # HTTP/2 BAT BUOC ten header viet thuong -> "X-Synth-Seconds" den noi
+        # thanh "x-synth-seconds". Goi thang localhost bang HTTP/1.1 thi giu
+        # nguyen hoa thuong nen khong lo ra, chi hong khi di qua duong ham.
+        return r.read(), {k.lower(): v for k, v in r.headers.items()}
 
 
 def read_wav(b: bytes) -> np.ndarray:
@@ -179,8 +183,8 @@ def main() -> None:
                 save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm)
                 with lock:
                     results[idx] = pcm
-                    meta[idx] = (float(hdr.get("X-Synth-Seconds", 0)),
-                                 float(hdr.get("X-Queue-Seconds", 0)),
+                    meta[idx] = (float(hdr.get("x-synth-seconds", 0)),
+                                 float(hdr.get("x-queue-seconds", 0)),
                                  len(pcm) / SAMPLE_RATE)
                     done_n[0] += 1
                     el = time.perf_counter() - t0
