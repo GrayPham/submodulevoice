@@ -266,8 +266,8 @@ for _ in range(180):
             for ln in open(LOG, encoding="utf-8", errors="replace").read().splitlines():
                 if "ha ve" in ln or "ha tu" in ln:
                     print("    ", ln)
-            print("     Muon ep dung so da dat: them \"--allow-oversubscribe\" vao "
-                  "danh sach tham so o tren.")
+            print("     Muon ep dung so da dat: them --allow-oversubscribe "
+                  "vao danh sach tham so o tren.")
         break
     except Exception:
         time.sleep(2)
