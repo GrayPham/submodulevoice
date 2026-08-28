@@ -258,6 +258,7 @@ for _ in range(180):
             h = json.load(r)
         print(json.dumps(h, ensure_ascii=False, indent=2))
         print(f"\\nSERVER SAN SANG - {h['workers']} worker")
+        print(f"API key: {API_KEY}")
         break
     except Exception:
         time.sleep(2)
