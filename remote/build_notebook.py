@@ -231,6 +231,8 @@ import json, os, secrets, subprocess, time, urllib.request
 
 PORT    = 8770
 WORKERS = 4          # diem toi uu do duoc; server tu ha neu VRAM khong du
+ALLOW_OVERSUBSCRIBE = False   # True = ep dung dung so WORKERS o tren, ke ca
+                              # khi vuot muc do duoc la co loi (>4)
 LOG     = "/content/server.log"
 
 # Key sinh MOT LAN roi giu lai. Truoc day moi lan chay lai o nay la sinh key
@@ -266,8 +268,8 @@ for _ in range(180):
             for ln in open(LOG, encoding="utf-8", errors="replace").read().splitlines():
                 if "ha ve" in ln or "ha tu" in ln:
                     print("    ", ln)
-            print("     Muon ep dung so da dat: them --allow-oversubscribe "
-                  "vao danh sach tham so o tren.")
+            print("     Muon ep dung so da dat: dat ALLOW_OVERSUBSCRIBE = True "
+                  "o dau o nay roi chay lai.")
         break
     except Exception:
         time.sleep(2)
@@ -407,7 +409,8 @@ while True:
             subprocess.Popen(
                 ["python", "remote/server.py", "--workers", str(WORKERS),
                  "--port", str(PORT), "--key", API_KEY,
-                 "--models-dir", "/content/models", "--profile", "lite"],
+                 "--models-dir", "/content/models", "--profile", "lite"]
+        + (["--allow-oversubscribe"] if ALLOW_OVERSUBSCRIBE else []),
                 stdout=f, stderr=subprocess.STDOUT,
                 env=dict(os.environ, OMNIVOICE_LIB="/content/omnivoice.cpp/build",
                          PYTHONUNBUFFERED="1"),
