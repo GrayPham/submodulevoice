@@ -102,11 +102,19 @@ def main() -> None:
           f"backend {health.get('backend')}")
     print(f"           VRAM {gpu.get('vram_free_mib')}/{gpu.get('vram_total_mib')} MiB trống")
 
+    # Bao nhieu request bay cung luc.
+    #
+    # Do that qua cloudflared tu Viet Nam len Colab T4 (mot cau ngan, 1.1s GPU):
+    #   1 luong: wall 4.04s | GPU 1.10s | mang 2.94s | throughput 0.27x
+    #   4 luong: wall 9.77s | GPU 9.23s | mang 7.30s | throughput 0.94x
+    #   8 luong: wall 17.2s | GPU 19.6s | mang 12.3s | throughput 1.14x
+    #
+    # Tang luong gan nhu khong giup: throughput 4->8 chi nhich tu 0.94 len
+    # 1.14 trong khi do tre moi request tang gap doi. Nut that la MANG chu
+    # khong phai GPU — moi doan tra ve ~1 MB WAV tho qua duong ham.
+    # Cach sua dung la GOM NHIEU DOAN VAO MOT REQUEST va nen audio, chu khong
+    # phai gui nhieu request hon. Vi vay mac dinh bang dung so worker.
     conc = args.concurrency or health["workers"]
-    if conc > health["workers"]:
-        print(f"           (giảm concurrency {conc} -> {health['workers']}: "
-              f"cao hơn số worker chỉ nằm chờ hàng đợi)")
-        conc = health["workers"]
 
     voice_id = None
     if args.ref:
