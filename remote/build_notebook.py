@@ -40,7 +40,7 @@ nhiều worker INT4, hàng đợi, trả kết quả về client.
 | ô | việc | lần đầu | lần sau |
 |---|---|---|---|
 | 1 | kiểm tra GPU | vài giây | vài giây |
-| 2 | clone repo + lấy runtime C++ | **8–15 phút** nếu phải build | **vài giây** nếu đã có bản dựng sẵn |
+| 2 | clone repo + lấy runtime C++ | **40–90 phút** nếu phải build (Colab free chỉ 2 vCPU) | **vài giây** nếu đã có bản dựng sẵn |
 | 3 | tải model INT4 (~660 MB) | 1–2 phút | vài giây |
 | 4 | bật server | ~30 giây | ~30 giây |
 | 5 | mở đường hầm, lấy URL + key | ~20 giây | ~20 giây |
@@ -93,8 +93,8 @@ print(f"compute capability {cc} -> build rieng cho sm_{CUDA_ARCH}, nhanh hon bui
 CELL_BUILD = """\
 # ── 2. Lấy runtime C++ ──────────────────────────────────────────────────────
 # Thu tu: co san -> Drive -> tai ban build san -> build tu nguon.
-# Build tu nguon mat 8-15 phut va dot quota Colab, nen chi lam MOT LAN roi
-# dong goi len GitHub Release; cac phien sau chi tai ve mat vai giay.
+# Build tu nguon mat 40-90 phut tren Colab free (chi 2 vCPU) nen chi lam MOT
+# LAN roi dong goi len GitHub Release; cac phien sau chi tai ve vai giay.
 import os, shutil, subprocess, urllib.request
 from pathlib import Path
 
@@ -112,10 +112,28 @@ SRC   = Path("/content/omnivoice.cpp")
 BUILD = SRC / "build"
 LIB   = BUILD / "libomnivoice.so"
 
-def sh(cmd, cwd=None):
+# Chay lenh va IN TUNG DONG ra ngay. subprocess.run ghi thang ra file
+# descriptor cua OS, ma Colab chi bat sys.stdout o tang Python -> khong thay
+# gi cho den khi ca o chay xong. Doc qua pipe roi print lai thi tien do hien
+# ngay. tail=1: bot bot dong cho do ngop, build sinh hang nghin dong.
+def sh(cmd, cwd=None, tail=0):
     print("$", cmd, flush=True)
-    if subprocess.run(cmd, shell=True, cwd=cwd).returncode:
-        raise SystemExit(f"that bai: {cmd}")
+    pr = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True,
+                          encoding="utf-8", errors="replace", bufsize=1)
+    n = 0
+    for line in pr.stdout:
+        n += 1
+        line = line.rstrip()
+        # cmake --build in dang "[ 42%] Building ..." -> chi giu dong co phan tram
+        # hoac dong loi, con lai bo bot cho do ngop.
+        if tail and not (line.startswith("[") or "rror" in line or "arning: " in line):
+            if n % 50:
+                continue
+        print(" ", line, flush=True)
+    pr.wait()
+    if pr.returncode:
+        raise SystemExit(f"that bai (ma {pr.returncode}): {cmd}")
 
 if USE_DRIVE_CACHE:
     from google.colab import drive; drive.mount("/content/drive")
@@ -158,7 +176,9 @@ elif not try_prebuilt():
            "https://github.com/ServeurpersoCom/omnivoice.cpp.git /content/omnivoice.cpp")
     sh(f"cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON "
        f"-DOMNIVOICE_SHARED=ON -DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}", cwd=SRC)
-    sh("cmake --build build -j$(nproc)", cwd=SRC)
+    print(f"build bang $(nproc) nhan — Colab free thuong chi co 2, "
+      f"nen buoc nay co the mat 40-90 phut. Chi phai lam MOT LAN.", flush=True)
+    sh("nproc && cmake --build build -j$(nproc)", cwd=SRC, tail=1)
 
     tgz = f"/content/omnivoice-linux-cuda-sm{CUDA_ARCH}.tar.gz"
     sh(f"cd {BUILD} && tar czf {tgz} *.so")
