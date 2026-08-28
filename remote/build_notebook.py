@@ -180,8 +180,16 @@ elif not try_prebuilt():
       f"nen buoc nay co the mat 40-90 phut. Chi phai lam MOT LAN.", flush=True)
     sh("nproc && cmake --build build -j$(nproc)", cwd=SRC, tail=1)
 
+    # Linux dat ten thu vien co phien ban: file that la libggml-base.so.0.17.0,
+    # con .so va .so.0 chi la symlink. Glob "*.so" chi lay symlink -> goi ra
+    # mot dong symlink tro vao hu khong, va loi chi lo o phien sau.
+    need = ["libomnivoice.so", "libggml.so", "libggml-base.so",
+            "libggml-cpu.so", "libggml-cuda.so"]
+    have = {f.name for f in BUILD.rglob("*.so*")}
+    thieu = [x for x in need if x not in have]
+    assert not thieu, f"thieu thu vien: {thieu}"
     tgz = f"/content/omnivoice-linux-cuda-sm{CUDA_ARCH}.tar.gz"
-    sh(f"cd {BUILD} && tar czf {tgz} *.so")
+    sh(f"cd {BUILD} && find . -name '*.so*' -print0 | tar czf {tgz} --null -T -")
     mb = Path(tgz).stat().st_size / 2**20
     print("=" * 72)
     print(f"  DA DONG GOI: {tgz}  ({mb:.0f} MB)")
@@ -192,14 +200,14 @@ elif not try_prebuilt():
     print("=" * 72)
     if USE_DRIVE_CACHE:
         Path(DRIVE_CACHE).mkdir(parents=True, exist_ok=True)
-        for f in BUILD.glob("*.so"):
+        for f in BUILD.rglob("*.so*"):
             shutil.copy2(f, Path(DRIVE_CACHE, f.name))
         print("da luu build vao Drive.")
 
 assert LIB.exists(), "khong thay libomnivoice.so"
 os.environ["OMNIVOICE_LIB"] = str(BUILD)
 print("thu vien:", LIB)
-print(sorted(p.name for p in BUILD.glob("*.so")))
+print(sorted(p.name for p in BUILD.rglob("*.so*")))
 """
 
 CELL_MODELS = """\
