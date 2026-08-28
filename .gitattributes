@@ -1,0 +1,19 @@
+# Chuẩn hoá xuống dòng: LF trong repo, git tự đổi khi checkout trên Windows.
+# Không có dòng này thì mỗi lệnh git add đều cảnh báo "LF will be replaced by CRLF".
+* text=auto eol=lf
+
+# Script Windows phải giữ CRLF, cmd.exe không đọc được LF ở một số cấu trúc.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Nhị phân: không đụng vào, không diff.
+*.gguf   binary
+*.wav    binary
+*.mp3    binary
+*.zip    binary
+*.dll    binary
+*.so     binary
+*.exe    binary
+
+# Notebook: diff theo dòng vẫn đọc được hơn là coi như nhị phân.
+*.ipynb  text eol=lf

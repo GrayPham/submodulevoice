@@ -1,29 +1,116 @@
-# Nguồn upstream: notebook tự clone lại từ GitHub, không cần đưa vào repo này
+# ─────────────────────────────────────────────────────────────────────────────
+# Nguồn ngoài
+# ─────────────────────────────────────────────────────────────────────────────
+# omnivoice.cpp là repo upstream, notebook Colab và build-win.cmd tự clone lại.
+# Không đưa vào repo này để khỏi lồng repo trong repo.
 omnivoice.cpp/
 
-# Model GGUF ~2 GB, tải từ HuggingFace
+# ─────────────────────────────────────────────────────────────────────────────
+# Model — tải từ HuggingFace, một file đã 250-750 MB
+# ─────────────────────────────────────────────────────────────────────────────
 *.gguf
+*.safetensors
+*.bin
+*.pt
+*.onnx
 models/
+checkpoints/
 
-# Kết quả chạy: wav, html, báo cáo
+# ─────────────────────────────────────────────────────────────────────────────
+# Thư mục build (C++/CMake/Ninja) — ở BẤT KỲ cấp nào, không chỉ trong omnivoice.cpp
+# ─────────────────────────────────────────────────────────────────────────────
+build/
+build-*/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+install_manifest.txt
+*.ninja
+.ninja_deps
+.ninja_log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sản phẩm biên dịch
+# ─────────────────────────────────────────────────────────────────────────────
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.lib
+*.a
+*.obj
+*.o
+*.pdb
+*.exp
+*.ilk
+*.idb
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Đóng gói phát hành
+# ─────────────────────────────────────────────────────────────────────────────
+dist/
+*.spec
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kết quả chạy: audio, báo cáo, trang nghe thử
+# ─────────────────────────────────────────────────────────────────────────────
 output/
+ket-qua/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.opus
+*.rvq
+*.npz
+bao-cao-*.json
+bao-cao-*.txt
+cham-diem.json
+*.log
+nohup.out
 
-# Đóng gói
-packaging/dist/
-packaging/build/
-packaging/.venv/
-
+# ─────────────────────────────────────────────────────────────────────────────
 # Python
+# ─────────────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
 .venv/
+venv/
+env/
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache và bí mật
+# ─────────────────────────────────────────────────────────────────────────────
+.cache/
+.hf_cache/
+.env
+*.pem
+*.key
+!*.key.example
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Hệ điều hành / editor
+# ─────────────────────────────────────────────────────────────────────────────
 Thumbs.db
+ehthumbs.db
+desktop.ini
 .DS_Store
 .vscode/
 .idea/
+*.swp
+*~
 
-# Kết quả chạy của bộ test GPU
-ket-qua/
+# Kịch bản dài chỉ là bản gốc lặp lại — sinh bằng scripts/make_long.py
+scripts/*_1h.txt

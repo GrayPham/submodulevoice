@@ -666,7 +666,10 @@ submodulevoice/
 │   └── download.py          # tải GGUF từ HuggingFace
 ├── scripts/
 │   ├── kichban_dai.txt      # kịch bản mẫu (13 đoạn, ~3 phút)
-│   └── kichban_5k.txt       # kịch bản 5246 ký tự (16 đoạn, ~4m45s)
+│   ├── kichban_5k.txt       # kịch bản 5246 ký tự (16 đoạn, ~4m45s)
+│   ├── kichban_10k.txt      # 10.450 ký tự, dùng cho bộ test GPU đóng gói
+│   ├── kichban_pt.txt       # tiếng Bồ Brazil, 1172 ký tự
+│   └── make_long.py         # sinh *_1h.txt (không commit, chỉ là bản lặp)
 ├── examples/
 │   ├── demo_clone.py        # clone + đo tốc độ
 │   ├── longform.py          # chạy kịch bản dài, báo cáo từng đoạn
