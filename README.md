@@ -773,6 +773,25 @@ python remote/client.py --url https://xxx.trycloudflare.com --key KEY ^
     --concurrency 4 -o output/remote/ket-qua.wav
 ```
 
+### 9.1 Test độ ổn định: 4 ngôn ngữ x 1 giờ
+
+```bash
+python scripts/make_stress.py                     # sinh 4 kịch bản 1 giờ
+python examples/stress_4lang.py --url <URL> --key <KEY>
+```
+
+Bốn tiến trình client độc lập, mỗi tiến trình một ngôn ngữ (Việt, Bồ, Anh,
+Tây Ban Nha), tổng ~4 giờ audio. Mỗi client chỉ giữ 1 request đang bay, mỗi
+request gói 8 đoạn — tổng 4 kết nối HTTP và 32 việc trong hàng đợi, vừa đủ để
+4 worker luôn có việc mà không nghẽn đường hầm.
+
+Suy từ mốc 3.85x realtime đã đo: 14.400s ÷ 3.85 = **~62 phút**. Sát mốc 1 giờ
+nên phải đo thật.
+
+Bài này cũng là phép thử cho đường hầm: cloudflared quick tunnel đứt vài phút
+một lần trong thực tế. Client ghi từng đoạn ra đĩa nên đứt giữa chừng thì lấy
+URL mới rồi chạy lại đúng lệnh đó, nó làm tiếp phần còn thiếu.
+
 ### Đặt bao nhiêu worker — số đo, không phải phỏng đoán
 
 `examples/bench_parallel.py`, RTX 4000 Ada, mỗi worker một `ov_context` riêng:
@@ -790,9 +809,12 @@ Hai kết luận, cả hai đều đã đưa vào mã:
 1. **Chia luồng không đổi chất lượng.** Băm SHA1 nội dung audio khớp 100% với
    bản chạy tuần tự cùng seed, ở mọi mức worker. Đây là điều phải chứng minh
    trước khi dám song song hoá, không phải giả định.
-2. **4 là điểm tối ưu, quá 4 thì chậm đi.** GPU đã bão hoà; thêm worker chỉ
-   tốn VRAM và làm nặng bộ lập lịch. Server mặc định 4 và tự hạ xuống nếu VRAM
-   không đủ (`VRAM_PER_WORKER_MIB = 1250`).
+2. **4 là điểm tối ưu, quá 4 thì chậm đi** — nhưng không phải vì GPU bão hoà.
+   Đo trên T4 qua Colab: 4 worker cho `utilization.gpu` 83% và 159.5s; 10 worker
+   cho **91%** và **171.1s**. Thêm worker *có* lấp được phần GPU nằm không, nhưng
+   tổng thời gian GPU nhảy từ 466s lên 997s — cùng lượng việc mà tốn gấp đôi thời
+   gian tính, vì các phép nhân ma trận tranh nhau 40 SM của T4. `utilization.gpu`
+   chỉ đếm "có kernel đang chạy", không đếm kernel đó hiệu quả đến đâu.
 
 ### Kết quả chạy thật (server + client trên cùng máy)
 

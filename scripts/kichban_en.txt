@@ -1,0 +1,15 @@
+Welcome to this recording. What follows is a long-form test of a text to speech system, and the content is deliberately varied so that the model has to handle several different kinds of sentence structure.
+
+The model behind this voice has roughly six hundred and twelve million parameters. That is small by current standards, where comparable systems often carry three to seven billion. Being small does not automatically mean being fast, though, and the reason is worth explaining.
+
+This architecture does not generate audio tokens one at a time the way an ordinary language model would. Instead it runs a fixed number of decoding steps, and at every single step the entire sequence is processed again from the beginning. There is no cache to reuse, so the cost grows roughly with the square of the passage length.
+
+The practical consequences are easy to state. On a mid range graphics card the system produces audio somewhere between two and five times faster than real time. Move the same work to a processor with no graphics acceleration and it drops to about one third of real time, which means three minutes of computation for every minute of speech.
+
+There is a detail about reference audio that catches almost everyone the first time. Voice cloning needs both a short recording and an exact transcript of that recording. If the transcript contains words that are not present in the audio, the model treats those words as not yet spoken, and it will insert them at the beginning of whatever it generates next. The result still sounds fluent, which is precisely why the problem is so hard to notice.
+
+Numbers deserve a mention as well. The duration estimator counts characters, weighting digits more heavily than letters, but not heavily enough to match how long they actually take to say aloud. Writing figures out in words gives the estimator a much better signal and produces more natural pacing.
+
+Finally, a word about running several jobs at once on a single graphics card. It is tempting to assume that more parallel work means more total output. Measurements say otherwise. Beyond a certain point the individual matrix operations begin competing for the same processing units, and each one slows down by more than the gain from filling idle gaps.
+
+That concludes this segment. Thank you for listening.

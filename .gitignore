@@ -116,3 +116,6 @@ desktop.ini
 
 # Kịch bản dài chỉ là bản gốc lặp lại — sinh bằng scripts/make_long.py
 scripts/*_1h.txt
+
+# Kich ban stress 1 gio moi ngon ngu - sinh bang scripts/make_stress.py
+scripts/stress_*.txt

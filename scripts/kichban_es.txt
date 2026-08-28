@@ -1,0 +1,15 @@
+Bienvenidos a esta grabación. Lo que sigue es una prueba de larga duración para un sistema de conversión de texto a voz, con contenido deliberadamente variado.
+
+El modelo que produce esta voz tiene alrededor de seiscientos doce millones de parámetros. Es pequeño para los estándares actuales, donde sistemas comparables suelen llevar entre tres y siete mil millones. Sin embargo, ser pequeño no significa automáticamente ser rápido, y vale la pena explicar por qué.
+
+Esta arquitectura no genera fichas de audio una por una, como haría un modelo de lenguaje corriente. En cambio ejecuta un número fijo de pasos de decodificación, y en cada paso vuelve a procesar la secuencia entera desde el principio. No hay memoria intermedia que reutilizar, de modo que el coste crece aproximadamente con el cuadrado de la longitud del pasaje.
+
+Las consecuencias prácticas son fáciles de enunciar. En una tarjeta gráfica de gama media el sistema produce audio entre dos y cinco veces más rápido que el tiempo real. Si trasladamos el mismo trabajo a un procesador sin aceleración gráfica, baja a cerca de un tercio del tiempo real, es decir tres minutos de cálculo por cada minuto de habla.
+
+Hay un detalle sobre el audio de referencia que sorprende a casi todo el mundo la primera vez. La clonación de voz necesita tanto una grabación breve como la transcripción exacta de esa grabación. Si la transcripción contiene palabras que no están en el audio, el modelo las considera aún no pronunciadas y las inserta al comienzo de lo que genere después. El resultado sigue sonando fluido, y precisamente por eso el problema resulta tan difícil de detectar.
+
+Los números también merecen atención. El estimador de duración cuenta caracteres y da más peso a los dígitos que a las letras, pero no el suficiente para reflejar cuánto tardan realmente en pronunciarse. Escribir las cifras con letras le da una señal mucho mejor y produce un ritmo más natural.
+
+Por último, unas palabras sobre ejecutar varios trabajos a la vez en una sola tarjeta gráfica. Resulta tentador suponer que más trabajo en paralelo significa más producción total. Las mediciones dicen lo contrario. Pasado cierto punto, las operaciones matriciales compiten por las mismas unidades de proceso y cada una se ralentiza más de lo que se gana rellenando huecos.
+
+Aquí termina este segmento. Gracias por escuchar.
