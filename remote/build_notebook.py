@@ -231,8 +231,16 @@ import json, os, secrets, subprocess, time, urllib.request
 
 PORT    = 8770
 WORKERS = 4          # diem toi uu do duoc; server tu ha neu VRAM khong du
-API_KEY = secrets.token_urlsafe(12)
 LOG     = "/content/server.log"
+
+# Key sinh MOT LAN roi giu lai. Truoc day moi lan chay lai o nay la sinh key
+# moi, client dang dung key cu bi tra 401 ma khong hieu vi sao.
+KEY_FILE = "/content/api_key.txt"
+if os.path.exists(KEY_FILE):
+    API_KEY = open(KEY_FILE).read().strip()
+else:
+    API_KEY = secrets.token_urlsafe(12)
+    open(KEY_FILE, "w").write(API_KEY)
 
 subprocess.run(f"kill -9 $(lsof -t -i:{PORT}) 2>/dev/null || true", shell=True)
 time.sleep(1)
