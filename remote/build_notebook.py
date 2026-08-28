@@ -299,26 +299,54 @@ print( "      --lang Portuguese --concurrency 4 -o output/remote/ket-qua.wav")
 """
 
 CELL_TEST = """\
-# ── 6. Tự kiểm tra (tuỳ chọn) ───────────────────────────────────────────────
-# Gui thu mot cau qua chinh duong ham, tach thoi gian GPU va thoi gian mang.
+# ── 6. Tự kiểm tra ──────────────────────────────────────────────────────────
+# Thu HAI buoc rieng biet. Gop lam mot thi khi hong khong biet loi o server
+# hay o duong ham — dung loi tung gap: gaierror khi DNS khong tra duoc ten
+# mien trycloudflare, trong khi server van chay tot.
 import json, time, urllib.request
 from IPython.display import Audio, display
 
-t0 = time.perf_counter()
-req = urllib.request.Request(URL + "/tts", method="POST",
-    data=json.dumps({"text": "Xin chao, day la bai kiem tra ket noi.",
-                     "lang": "Vietnamese", "steps": 16}).encode(),
-    headers={"Content-Type": "application/json", "X-API-Key": API_KEY})
-with urllib.request.urlopen(req, timeout=300) as r:
-    wav = r.read()
-    synth = float(r.headers.get("X-Synth-Seconds", 0))
-    audio = float(r.headers.get("X-Audio-Seconds", 0))
-rtt = time.perf_counter() - t0
+PAYLOAD = json.dumps({"text": "Xin chao, day la bai kiem tra ket noi.",
+                      "lang": "Vietnamese", "steps": 16}).encode()
+HDRS = {"Content-Type": "application/json", "X-API-Key": API_KEY}
 
-open("/content/test.wav", "wb").write(wav)
-print(f"audio {audio:.2f}s | GPU tinh {synth:.2f}s | khu hoi {rtt:.2f}s "
-      f"| phan mang {rtt - synth:.2f}s")
-display(Audio("/content/test.wav"))
+def call(base, timeout=300):
+    t0 = time.perf_counter()
+    req = urllib.request.Request(base + "/tts", data=PAYLOAD, headers=HDRS, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        wav = r.read()
+        synth = float(r.headers.get("X-Synth-Seconds", 0))
+        audio = float(r.headers.get("X-Audio-Seconds", 0))
+    return wav, synth, audio, time.perf_counter() - t0
+
+# --- buoc 1: server, khong qua mang ngoai ------------------------------------
+print("[1/2] goi thang 127.0.0.1 ...", flush=True)
+try:
+    wav, synth, audio, rtt = call(f"http://127.0.0.1:{PORT}")
+    print(f"  OK — audio {audio:.2f}s, GPU tinh {synth:.2f}s")
+    open("/content/test.wav", "wb").write(wav)
+    display(Audio("/content/test.wav"))
+    server_ok = True
+except Exception as e:
+    server_ok = False
+    print(f"  HONG: {type(e).__name__}: {e}")
+    print("  -> loi o SERVER, khong phai duong ham. Xem log:")
+    print(open(LOG, encoding="utf-8", errors="replace").read()[-3000:])
+
+# --- buoc 2: duong ham -------------------------------------------------------
+if server_ok:
+    print(f"\n[2/2] goi qua duong ham {URL} ...", flush=True)
+    try:
+        _w, s2, a2, rtt2 = call(URL)
+        print(f"  OK — khu hoi {rtt2:.2f}s, trong do GPU {s2:.2f}s, "
+              f"phan mang {rtt2 - s2:.2f}s")
+    except Exception as e:
+        print(f"  HONG: {type(e).__name__}: {e}")
+        print("  Server VAN TOT, chi duong ham co van de. Cach xu ly:")
+        print("    - chay lai o 5 de lay URL moi")
+        print("    - kiem tra: !pgrep -f cloudflared  va  !tail -25 /content/cloudflared.log")
+        print("    - loi 'Name or service not known' = DNS chua tra duoc ten mien,")
+        print("      thuong do tunnel vua chet hoac chua kip lan truyen; doi 30s roi thu lai")
 """
 
 
