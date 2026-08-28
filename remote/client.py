@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import re
@@ -85,6 +86,8 @@ def main() -> None:
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--pause", type=float, default=0.45)
     ap.add_argument("--keep-parts", action="store_true")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="lam lai tu dau, bo qua cac doan da co san")
     ap.add_argument("-o", "--out", default="output/remote/ket-qua.wav")
     args = ap.parse_args()
 
@@ -123,9 +126,42 @@ def main() -> None:
              for p in re.split(r"\n\s*\n", Path(args.script).read_text(encoding="utf-8"))
              if p.strip()]
     print(f"kịch bản : {len(paras)} đoạn, {sum(len(p) for p in paras)} ký tự")
-    print(f"gửi      : {conc} luồng song song\n")
+    # Mỗi đoạn được ghi ra đĩa NGAY khi xong. Colab đứt giữa chừng thì chạy lại
+    # đúng lệnh này là nó bỏ qua phần đã có và làm tiếp — không mất công GPU đã
+    # chạy. Vân tay gồm kịch bản + tham số giọng, nên đổi bất cứ thứ gì là các
+    # đoạn cũ bị coi như không dùng được, tránh ghép nhầm hai lần chạy khác nhau.
+    out = Path(args.out)
+    parts_dir = out.parent / f"{out.stem}.parts"
+    fp = hashlib.sha1(json.dumps({
+        "paras": paras, "lang": args.lang, "steps": args.steps, "seed": args.seed,
+        "instruct": args.instruct, "ref": Path(args.ref).name if args.ref else None,
+    }, ensure_ascii=False).encode()).hexdigest()[:16]
+    manifest = parts_dir / "manifest.json"
 
     results: dict[int, np.ndarray] = {}
+    if args.no_resume and parts_dir.exists():
+        for f in parts_dir.glob("*"):
+            f.unlink()
+    if manifest.exists():
+        try:
+            old = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            old = {}
+        if old.get("fingerprint") == fp:
+            for f in sorted(parts_dir.glob("part-*.wav")):
+                idx = int(f.stem.split("-")[1]) - 1
+                if 0 <= idx < len(paras):
+                    results[idx] = read_wav(f.read_bytes())
+            if results:
+                print(f"tiếp tục : đã có {len(results)}/{len(paras)} đoạn từ lần chạy trước")
+        else:
+            print("làm lại  : kịch bản hoặc tham số đã đổi, bỏ các đoạn cũ")
+            for f in parts_dir.glob("*"):
+                f.unlink()
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"fingerprint": fp, "n": len(paras)}), encoding="utf-8")
+    todo = [(k, t) for k, t in enumerate(paras) if k not in results]
+    print(f"gửi      : {len(todo)} đoạn qua {conc} luồng song song")
     meta: dict[int, tuple[float, float, float]] = {}
     lock = threading.Lock()
     done_n = [0]
@@ -140,6 +176,7 @@ def main() -> None:
             try:
                 b, hdr = http(args.url, args.key, "/tts", payload)
                 pcm = read_wav(b)
+                save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm)
                 with lock:
                     results[idx] = pcm
                     meta[idx] = (float(hdr.get("X-Synth-Seconds", 0)),
@@ -147,8 +184,8 @@ def main() -> None:
                                  len(pcm) / SAMPLE_RATE)
                     done_n[0] += 1
                     el = time.perf_counter() - t0
-                    print(f"\r  {done_n[0]}/{len(paras)} đoạn  |  {el:.0f}s trôi qua  "
-                          f"|  còn ~{el / done_n[0] * (len(paras) - done_n[0]):.0f}s   ",
+                    print(f"\r  {done_n[0]}/{len(todo)} đoạn  |  {el:.0f}s trôi qua  "
+                          f"|  còn ~{el / done_n[0] * (len(todo) - done_n[0]):.0f}s   ",
                           end="", flush=True)
                 return
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
@@ -158,7 +195,7 @@ def main() -> None:
             print(f"\n  đoạn {idx + 1} HỎNG sau {args.retries + 1} lần: {last}")
 
     with ThreadPoolExecutor(max_workers=conc) as ex:
-        list(ex.map(one, list(enumerate(paras))))
+        list(ex.map(one, todo))
     wall = time.perf_counter() - t0
     print()
 
@@ -170,7 +207,6 @@ def main() -> None:
 
     gap = np.zeros(int(args.pause * SAMPLE_RATE), dtype=np.float32)
     pieces: list[np.ndarray] = []
-    out = Path(args.out)
     w = len(str(len(paras)))
     for i in range(len(paras)):
         if pieces:

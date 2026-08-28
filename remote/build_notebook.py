@@ -40,10 +40,11 @@ nhiều worker INT4, hàng đợi, trả kết quả về client.
 | ô | việc | lần đầu | lần sau |
 |---|---|---|---|
 | 1 | kiểm tra GPU | vài giây | vài giây |
-| 2 | clone repo + build omnivoice.cpp | **8–15 phút** | vài giây nếu cache Drive |
+| 2 | clone repo + lấy runtime C++ | **8–15 phút** nếu phải build | **vài giây** nếu đã có bản dựng sẵn |
 | 3 | tải model INT4 (~660 MB) | 1–2 phút | vài giây |
 | 4 | bật server | ~30 giây | ~30 giây |
 | 5 | mở đường hầm, lấy URL + key | ~20 giây | ~20 giây |
+| 7 | giữ phiên sống, tự dựng lại khi hỏng | chạy liên tục | chạy liên tục |
 
 Xong ô 5 thì chép URL với API key về máy mình rồi chạy `remote/client.py`.
 
@@ -90,8 +91,11 @@ print(f"compute capability {cc} -> build rieng cho sm_{CUDA_ARCH}, nhanh hon bui
 """
 
 CELL_BUILD = """\
-# ── 2. Clone repo + build omnivoice.cpp ─────────────────────────────────────
-import os, shutil, subprocess
+# ── 2. Lấy runtime C++ ──────────────────────────────────────────────────────
+# Thu tu: co san -> Drive -> tai ban build san -> build tu nguon.
+# Build tu nguon mat 8-15 phut va dot quota Colab, nen chi lam MOT LAN roi
+# dong goi len GitHub Release; cac phien sau chi tai ve mat vai giay.
+import os, shutil, subprocess, urllib.request
 from pathlib import Path
 
 REPO_URL   = "%%REPO%%"
@@ -100,10 +104,13 @@ GIT_TOKEN  = ""        # chi can khi repo dat private
 USE_DRIVE_CACHE = False
 DRIVE_CACHE = "/content/drive/MyDrive/omnivoice-build"
 
-APP  = Path("/content/submodulevoice")
-SRC  = Path("/content/omnivoice.cpp")
+PREBUILT = (REPO_URL.replace(".git", "")
+            + f"/releases/download/runtime-linux/omnivoice-linux-cuda-sm{CUDA_ARCH}.tar.gz")
+
+APP   = Path("/content/submodulevoice")
+SRC   = Path("/content/omnivoice.cpp")
 BUILD = SRC / "build"
-LIB  = BUILD / "libomnivoice.so"
+LIB   = BUILD / "libomnivoice.so"
 
 def sh(cmd, cwd=None):
     print("$", cmd, flush=True)
@@ -113,7 +120,6 @@ def sh(cmd, cwd=None):
 if USE_DRIVE_CACHE:
     from google.colab import drive; drive.mount("/content/drive")
 
-# --- ma nguon cua minh -------------------------------------------------------
 url = REPO_URL
 if GIT_TOKEN:
     url = REPO_URL.replace("https://", f"https://{GIT_TOKEN}@")
@@ -122,30 +128,55 @@ if APP.exists():
        f"git -C {APP} reset --hard origin/{BRANCH}")
 else:
     sh(f"git clone --depth 1 -b {BRANCH} {url} {APP}")
-
 sh("pip install -q numpy huggingface_hub")
 
-# --- runtime C++ -------------------------------------------------------------
+def try_prebuilt() -> bool:
+    tgz = "/content/runtime.tar.gz"
+    try:
+        print(f"thu tai ban build san cho sm_{CUDA_ARCH} ...", flush=True)
+        urllib.request.urlretrieve(PREBUILT, tgz)
+    except Exception as e:
+        print(f"  chua co ban build san ({type(e).__name__}) -> build tu nguon")
+        return False
+    BUILD.mkdir(parents=True, exist_ok=True)
+    sh(f"tar xzf {tgz} -C {BUILD}")
+    if LIB.exists():
+        print("  dung ban build san, bo qua buoc build.")
+        return True
+    print("  goi tai ve sai dinh dang -> build tu nguon")
+    return False
+
 if LIB.exists():
-    print("da co ban build san.")
+    print("da co ban build trong /content.")
 elif USE_DRIVE_CACHE and Path(DRIVE_CACHE, "libomnivoice.so").exists():
     print("khoi phuc build tu Drive ...")
     BUILD.mkdir(parents=True, exist_ok=True)
     shutil.copytree(DRIVE_CACHE, BUILD, dirs_exist_ok=True)
-else:
+elif not try_prebuilt():
     if not SRC.exists():
         sh("git clone --recurse-submodules --depth 1 "
            "https://github.com/ServeurpersoCom/omnivoice.cpp.git /content/omnivoice.cpp")
     sh(f"cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON "
        f"-DOMNIVOICE_SHARED=ON -DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}", cwd=SRC)
     sh("cmake --build build -j$(nproc)", cwd=SRC)
+
+    tgz = f"/content/omnivoice-linux-cuda-sm{CUDA_ARCH}.tar.gz"
+    sh(f"cd {BUILD} && tar czf {tgz} *.so")
+    mb = Path(tgz).stat().st_size / 2**20
+    print("=" * 72)
+    print(f"  DA DONG GOI: {tgz}  ({mb:.0f} MB)")
+    print("  Tai file nay ve may (bang File ben trai), roi tren GitHub:")
+    print("    Releases -> Draft a new release -> tag: runtime-linux")
+    print("    -> dinh kem file tren -> Publish")
+    print("  Tu lan sau notebook tu tai ve, khong phai build lai 15 phut.")
+    print("=" * 72)
     if USE_DRIVE_CACHE:
         Path(DRIVE_CACHE).mkdir(parents=True, exist_ok=True)
         for f in BUILD.glob("*.so"):
             shutil.copy2(f, Path(DRIVE_CACHE, f.name))
         print("da luu build vao Drive.")
 
-assert LIB.exists(), "khong thay libomnivoice.so sau khi build"
+assert LIB.exists(), "khong thay libomnivoice.so"
 os.environ["OMNIVOICE_LIB"] = str(BUILD)
 print("thu vien:", LIB)
 print(sorted(p.name for p in BUILD.glob("*.so")))
@@ -263,6 +294,76 @@ display(Audio("/content/test.wav"))
 """
 
 
+CELL_WATCH = """\
+# ── 7. Giữ phiên sống + tự dựng lại khi hỏng (để ô này CHẠY LIÊN TỤC) ───────
+#
+# Colab thu hồi runtime khi thấy TRÌNH DUYỆT không hoạt động, chứ không nhìn
+# GPU có bận hay không. Một ô đang chạy được tính là hoạt động, nên vòng lặp
+# này vừa giữ phiên vừa làm việc thật: theo dõi server, dựng lại nếu nó chết,
+# mở lại đường hầm nếu URL rơi.
+#
+# Không tránh được giới hạn cứng (~12h free, ~24h Pro). Hết là hết.
+# Ctrl+C hoặc bấm nút dừng để thoát.
+import json, subprocess, time, urllib.request
+from datetime import datetime
+from pathlib import Path
+
+CHECK_EVERY = 60          # giay
+last_served = -1
+
+def health():
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+def tunnel_alive() -> bool:
+    return subprocess.run("pgrep -f cloudflared", shell=True,
+                          capture_output=True).returncode == 0
+
+print(f"theo doi moi {CHECK_EVERY}s. De o nay chay lien tuc.\\n")
+while True:
+    h = health()
+    ts = datetime.now().strftime("%H:%M:%S")
+
+    if h is None:
+        print(f"[{ts}] SERVER CHET -> dung lai ...", flush=True)
+        with open(LOG, "ab") as f:
+            subprocess.Popen(
+                ["python", "remote/server.py", "--workers", str(WORKERS),
+                 "--port", str(PORT), "--key", API_KEY,
+                 "--models-dir", "/content/models", "--profile", "lite"],
+                stdout=f, stderr=subprocess.STDOUT,
+                env=dict(os.environ, OMNIVOICE_LIB="/content/omnivoice.cpp/build",
+                         PYTHONUNBUFFERED="1"),
+                cwd="/content/submodulevoice")
+        time.sleep(45)
+        print(f"[{ts}] {'da len lai' if health() else 'VAN CHUA LEN, xem ' + LOG}", flush=True)
+    else:
+        d = h["served"] - last_served if last_served >= 0 else h["served"]
+        last_served = h["served"]
+        gb = h.get("gpu", {})
+        print(f"[{ts}] worker {h['busy']}/{h['workers']} ban | doi {h['queued']} | "
+              f"da xong {h['served']} (+{d}) | loi {h['failed']} | "
+              f"VRAM trong {gb.get('vram_free_mib')} MiB", flush=True)
+
+    if not tunnel_alive():
+        print(f"[{ts}] DUONG HAM RO'I -> mo lai ...", flush=True)
+        subprocess.Popen(f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
+                         f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True)
+        time.sleep(20)
+        import re as _re
+        m = _re.search(r"https://[a-z0-9-]+\\.trycloudflare\\.com",
+                       Path("/content/cloudflared.log").read_text(errors="replace"))
+        if m and m.group(0) != URL:
+            URL = m.group(0)
+            print(f"[{ts}] URL MOI: {URL}")
+            print(f"        chay lai client voi URL nay, no se lam tiep phan con thieu")
+
+    time.sleep(CHECK_EVERY)
+"""
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=DEFAULT_REPO, help="URL git của repo này")
@@ -276,6 +377,7 @@ def main() -> None:
         code(CELL_START),
         code(CELL_TUNNEL),
         code(CELL_TEST),
+        code(CELL_WATCH),
     ]
     nb = {
         "cells": cells,
