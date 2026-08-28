@@ -1,0 +1,25 @@
+Chào mừng quý vị và các bạn đến với bản tin công nghệ tuần này. Tôi là người dẫn chương trình, và trong hai mươi phút tới, chúng ta sẽ cùng nhìn lại những sự kiện đáng chú ý nhất.
+
+Theo thông tin từ Sở Y tế Hà Nội, từ ngày 18 tháng 8 đến ngày 4 tháng 9, thành phố phấn đấu 100% trẻ em dưới sáu tuổi trong các cơ sở giáo dục mầm non và học sinh từ sáu tuổi đến dưới mười tám tuổi trong các cơ sở giáo dục phổ thông trên địa bàn sẽ được khám sức khỏe định kỳ miễn phí. Kết quả khám sẽ được sử dụng để đánh giá, phân loại tình trạng sức khỏe của từng em, cập nhật vào hồ sơ sức khỏe điện tử, phục vụ công tác quản lý sức khỏe trẻ em trong vòng đời từ năm 2026.
+
+Chuyển sang lĩnh vực công nghệ. Một mô hình chuyển văn bản thành giọng nói mới vừa được công bố mã nguồn mở, hỗ trợ hơn sáu trăm ngôn ngữ, trong đó có tiếng Việt. Điểm đặc biệt của mô hình này nằm ở kích thước: chỉ khoảng sáu trăm mười hai triệu tham số, nhẹ hơn nhiều so với các mô hình cùng loại vốn thường có từ ba đến bảy tỷ tham số.
+
+Nhưng nhẹ không có nghĩa là chạy nhanh trên mọi cấu hình. Kiến trúc của mô hình không sinh từng mã âm thanh một cách tuần tự như các mô hình ngôn ngữ thông thường. Thay vào đó, nó chạy ba mươi hai bước giải mã, và ở mỗi bước, toàn bộ chuỗi phải được xử lý lại từ đầu. Điều này có nghĩa là không có bộ nhớ đệm nào để tiết kiệm, và chi phí tính toán tăng gần như bình phương theo độ dài đoạn văn.
+
+Hệ quả thực tế rất rõ ràng. Trên một card đồ họa phổ thông, mô hình đạt tốc độ khoảng hai đến năm lần thời gian thực, nghĩa là một phút âm thanh chỉ mất từ mười hai đến ba mươi giây để tạo ra. Nhưng khi chuyển sang chạy hoàn toàn bằng bộ vi xử lý trung tâm, tốc độ tụt xuống chỉ còn khoảng một phần ba thời gian thực. Nói cách khác, để tạo ra một phút âm thanh, máy cần khoảng ba phút tính toán.
+
+Vậy làm thế nào để tối ưu? Có ba điều đáng lưu ý.
+
+Thứ nhất, độ dài của đoạn giọng mẫu ảnh hưởng trực tiếp đến tốc độ. Nhiều người nghĩ rằng đưa vào đoạn mẫu càng dài thì giọng nhân bản càng giống. Thực tế không phải vậy. Đoạn mẫu từ bốn đến sáu giây là đủ, và việc rút ngắn từ mười bảy giây xuống sáu giây có thể giúp tăng tốc gấp hai lần rưỡi.
+
+Thứ hai, số bước giải mã có thể giảm. Mặc định là ba mươi hai bước, nhưng ở mức mười sáu bước, tai người gần như không phân biệt được sự khác biệt, trong khi tốc độ tăng gấp đôi. Xuống tám bước thì bắt đầu nghe thấy hiện tượng méo tiếng ở những âm cuối câu.
+
+Thứ ba, và điều này hơi phản trực giác: việc cắt nhỏ văn bản không phải lúc nào cũng giúp nhanh hơn. Bởi vì mỗi đoạn nhỏ đều phải xử lý lại toàn bộ đoạn giọng mẫu, nên với văn bản ngắn, cắt nhỏ lại làm chậm đi. Chỉ nên bật chế độ cắt đoạn khi văn bản thực sự dài, từ ba mươi giây trở lên.
+
+Một câu hỏi thường gặp là: liệu có thể chạy trên máy tính không có card đồ họa rời hay không? Câu trả lời là có, nhưng cần xác định rõ kỳ vọng. Nếu công việc của bạn là lồng tiếng cho video và có thể để máy chạy qua đêm, thì hoàn toàn khả thi. Nếu bạn cần đọc thời gian thực, ví dụ như trợ lý ảo trả lời ngay lập tức, thì card đồ họa là bắt buộc.
+
+Về mặt bộ nhớ, phiên bản lượng tử hóa bốn bit chỉ chiếm khoảng sáu trăm sáu mươi megabyte trên đĩa và cần chưa tới một phẩy năm gigabyte bộ nhớ khi chạy. Nghĩa là ngay cả card đồ họa bốn gigabyte đời cũ cũng đủ sức xử lý.
+
+Cuối cùng, xin lưu ý một điểm quan trọng khi nhân bản giọng nói. Mô hình cần cả đoạn âm thanh mẫu và bản ghi lời chính xác của đoạn đó. Nếu bản ghi lời bị thiếu vài từ ở đầu, mô hình sẽ bỏ qua đúng số từ tương ứng ở đầu đoạn được tạo ra. Đây là lỗi rất hay gặp và cũng rất khó phát hiện, vì kết quả nghe vẫn trôi chảy, chỉ là thiếu mất phần đầu.
+
+Đó là toàn bộ nội dung của bản tin hôm nay. Xin cảm ơn quý vị đã theo dõi, và hẹn gặp lại trong chương trình tuần sau.

@@ -1,0 +1,29 @@
+# Nguồn upstream: notebook tự clone lại từ GitHub, không cần đưa vào repo này
+omnivoice.cpp/
+
+# Model GGUF ~2 GB, tải từ HuggingFace
+*.gguf
+models/
+
+# Kết quả chạy: wav, html, báo cáo
+output/
+
+# Đóng gói
+packaging/dist/
+packaging/build/
+packaging/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Hệ điều hành / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Kết quả chạy của bộ test GPU
+ket-qua/
