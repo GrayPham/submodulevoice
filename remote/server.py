@@ -179,12 +179,17 @@ def gpu_info() -> dict:
     try:
         out = subprocess.run(
             ["nvidia-smi",
-             "--query-gpu=name,memory.total,memory.free,compute_cap",
+             "--query-gpu=name,memory.total,memory.free,compute_cap,"
+             "utilization.gpu,utilization.memory",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10).stdout.splitlines()[0]
-        n, tot, free, cc = [x.strip() for x in out.split(",")]
+        n, tot, free, cc, ug, um = [x.strip() for x in out.split(",")]
+        # utilization.gpu la % thoi gian CO kernel dang chay — day moi la thuoc
+        # do tai tinh toan. "GPU RAM" tren bang Resources cua Colab chi la BO
+        # NHO, con trong khong co nghia la con suc tinh.
         return {"name": n, "vram_total_mib": int(tot),
-                "vram_free_mib": int(free), "compute_cap": cc}
+                "vram_free_mib": int(free), "compute_cap": cc,
+                "util_gpu_pct": int(ug), "util_mem_pct": int(um)}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

@@ -260,7 +260,8 @@ for _ in range(180):
         print(f"\\nSERVER SAN SANG - {h['workers']} worker")
         print(f"API key: {API_KEY}")
         if h["workers"] != WORKERS:
-            print(f"\n  !! Ban yeu cau {WORKERS} worker nhung server chay "
+            print("")
+            print(f"  !! Ban yeu cau {WORKERS} worker nhung server chay "
                   f"{h['workers']}. Ly do trong log:")
             for ln in open(LOG, encoding="utf-8", errors="replace").read().splitlines():
                 if "ha ve" in ln or "ha tu" in ln:
