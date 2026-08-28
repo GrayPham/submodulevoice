@@ -252,7 +252,11 @@ with open(LOG, "wb") as f:
     subprocess.Popen(
         ["python", "remote/server.py", "--workers", str(WORKERS), "--port", str(PORT),
          "--key", API_KEY, "--models-dir", "/content/models", "--profile", "lite"],
-        stdout=f, stderr=subprocess.STDOUT, env=env, cwd="/content/submodulevoice")
+        stdout=f, stderr=subprocess.STDOUT, env=env, cwd="/content/submodulevoice",
+        # Tach hen nhom tien trinh. Khong co dong nay thi server nam chung
+        # process group voi notebook: bam dung BAT KY o nao la Colab gui SIGINT
+        # cho ca nhom va server chet theo, log chi de lai "[server] dung."
+        start_new_session=True)
 
 for _ in range(180):
     try:
@@ -291,7 +295,8 @@ if not Path("/content/cloudflared").exists():
 
 subprocess.run("pkill -f cloudflared || true", shell=True)
 subprocess.Popen(f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
-                 f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True)
+                 f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True,
+                 start_new_session=True)
 
 URL = None
 for _ in range(40):
@@ -427,7 +432,7 @@ while True:
                 stdout=f, stderr=subprocess.STDOUT,
                 env=dict(os.environ, OMNIVOICE_LIB="/content/omnivoice.cpp/build",
                          PYTHONUNBUFFERED="1"),
-                cwd="/content/submodulevoice")
+                cwd="/content/submodulevoice", start_new_session=True)
         time.sleep(45)
         print(f"[{ts}] {'da len lai' if health() else 'VAN CHUA LEN, xem ' + LOG}", flush=True)
     else:
@@ -443,7 +448,8 @@ while True:
         subprocess.run("pkill -f cloudflared || true", shell=True)
         time.sleep(2)
         subprocess.Popen(f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
-                         f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True)
+                         f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True,
+                 start_new_session=True)
         time.sleep(20)
         import re as _re
         m = _re.search(r"https://[a-z0-9-]+\\.trycloudflare\\.com",
