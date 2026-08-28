@@ -395,8 +395,21 @@ def health():
         return None
 
 def tunnel_alive() -> bool:
-    return subprocess.run("pgrep -f cloudflared", shell=True,
-                          capture_output=True).returncode == 0
+    # Kiem tra DUONG HAM CO THONG khong, chu khong phai tien trinh co ton tai
+    # khong. Da gap: cloudflared van chay nhung ket noi toi Cloudflare da dut,
+    # ben ngoai nhan HTTP 530 (origin unreachable) trong khi pgrep bao "on"
+    # nen watchdog khong dung lai.
+    if subprocess.run("pgrep -f cloudflared", shell=True,
+                      capture_output=True).returncode != 0:
+        return False
+    if not URL:
+        return False
+    try:
+        req = urllib.request.Request(URL + "/health")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
 print(f"theo doi moi {CHECK_EVERY}s. De o nay chay lien tuc.\\n")
 while True:
@@ -426,7 +439,9 @@ while True:
               f"VRAM trong {gb.get('vram_free_mib')} MiB", flush=True)
 
     if not tunnel_alive():
-        print(f"[{ts}] DUONG HAM RO'I -> mo lai ...", flush=True)
+        print(f"[{ts}] DUONG HAM DUT -> mo lai ...", flush=True)
+        subprocess.run("pkill -f cloudflared || true", shell=True)
+        time.sleep(2)
         subprocess.Popen(f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
                          f"--no-autoupdate > /content/cloudflared.log 2>&1", shell=True)
         time.sleep(20)
