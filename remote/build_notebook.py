@@ -146,7 +146,7 @@ if APP.exists():
        f"git -C {APP} reset --hard origin/{BRANCH}")
 else:
     sh(f"git clone --depth 1 -b {BRANCH} {url} {APP}")
-sh("pip install -q numpy huggingface_hub")
+sh("pip install -q numpy huggingface_hub soundfile")
 
 def try_prebuilt() -> bool:
     tgz = "/content/runtime.tar.gz"

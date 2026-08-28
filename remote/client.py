@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -58,6 +59,23 @@ def http(url: str, key: str, path: str, payload: dict | None = None,
         # thanh "x-synth-seconds". Goi thang localhost bang HTTP/1.1 thi giu
         # nguyen hoa thuong nen khong lo ra, chi hong khi di qua duong ham.
         return r.read(), {k.lower(): v for k, v in r.headers.items()}
+
+
+try:
+    import soundfile as _sf
+except Exception:
+    _sf = None
+
+
+def decode(b: bytes, name: str) -> np.ndarray:
+    """Giai ma audio server tra ve. WAV dung thu vien chuan, con lai can
+    soundfile: pip install soundfile"""
+    if name.endswith(".wav"):
+        return read_wav(b)
+    if _sf is None:
+        raise SystemExit("can soundfile de giai ma flac/opus: pip install soundfile")
+    x, _sr = _sf.read(io.BytesIO(b), dtype="float32", always_2d=False)
+    return np.ascontiguousarray(x, dtype=np.float32)
 
 
 def read_wav(b: bytes) -> np.ndarray:
@@ -88,6 +106,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--concurrency", type=int, default=0, help="0 = lấy đúng số worker server")
     ap.add_argument("--retries", type=int, default=2)
+    ap.add_argument("--batch", type=int, default=8,
+                    help="so doan gop vao mot request; 0 hoac 1 = gui rieng tung doan")
+    ap.add_argument("--format", default="flac",
+                    choices=["flac", "opus", "vorbis", "wav"],
+                    help="dinh dang truyen: flac khong mat du lieu, nho hon 1.9 lan")
     ap.add_argument("--pause", type=float, default=0.45)
     ap.add_argument("--keep-parts", action="store_true")
     ap.add_argument("--no-resume", action="store_true",
@@ -179,6 +202,49 @@ def main() -> None:
     done_n = [0]
     t0 = time.perf_counter()
 
+    fmt = args.format
+    if fmt != "wav" and fmt not in (health.get("formats") or ["wav"]):
+        print(f"           server khong ho tro '{fmt}', chuyen ve wav")
+        fmt = "wav"
+
+    def record(idx: int, pcm: np.ndarray, synth: float, queued: float) -> None:
+        save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm)
+        with lock:
+            results[idx] = pcm
+            meta[idx] = (synth, queued, len(pcm) / SAMPLE_RATE)
+            done_n[0] += 1
+            el = time.perf_counter() - t0
+            left = el / done_n[0] * (len(todo) - done_n[0])
+            print(f"\r  {done_n[0]}/{len(todo)} đoạn  |  {el:.0f}s trôi qua  |  còn ~{left:.0f}s   ",
+                  end="", flush=True)
+
+    # Gom nhieu doan vao MOT request. Moi request ton ~2.9s do tre co dinh qua
+    # duong ham bat ke dai ngan, nen gom lai la cho an tien nhat. Server tung
+    # ca lo vao hang doi cua no nen ca 4 worker cung lam mot luc.
+    def send_batch(group: list[tuple[int, str]]) -> None:
+        payload = {"items": [{"i": i, "text": t} for i, t in group],
+                   "voice_id": voice_id, "lang": args.lang, "steps": args.steps,
+                   "seed": args.seed, "instruct": args.instruct, "format": fmt}
+        last = None
+        for attempt in range(args.retries + 1):
+            try:
+                b, _hdr = http(args.url, args.key, "/tts_batch", payload)
+                with zipfile.ZipFile(io.BytesIO(b)) as z:
+                    m = json.loads(z.read("meta.json"))
+                    for it in m["items"]:
+                        if it.get("error"):
+                            with lock:
+                                print(f"\n  đoạn {it['i'] + 1} lỗi: {it['error']}")
+                            continue
+                        record(it["i"], decode(z.read(it["file"]), it["file"]),
+                               it.get("synth", 0.0), 0.0)
+                return
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+                last = e
+                time.sleep(1.5 * (attempt + 1))
+        with lock:
+            print(f"\n  lô {[i + 1 for i, _ in group]} HỎNG sau {args.retries + 1} lần: {last}")
+
     def one(idx_text: tuple[int, str]) -> None:
         idx, text = idx_text
         payload = {"text": text, "voice_id": voice_id, "lang": args.lang,
@@ -187,18 +253,8 @@ def main() -> None:
         for attempt in range(args.retries + 1):
             try:
                 b, hdr = http(args.url, args.key, "/tts", payload)
-                pcm = read_wav(b)
-                save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm)
-                with lock:
-                    results[idx] = pcm
-                    meta[idx] = (float(hdr.get("x-synth-seconds", 0)),
-                                 float(hdr.get("x-queue-seconds", 0)),
-                                 len(pcm) / SAMPLE_RATE)
-                    done_n[0] += 1
-                    el = time.perf_counter() - t0
-                    print(f"\r  {done_n[0]}/{len(todo)} đoạn  |  {el:.0f}s trôi qua  "
-                          f"|  còn ~{el / done_n[0] * (len(todo) - done_n[0]):.0f}s   ",
-                          end="", flush=True)
+                record(idx, read_wav(b), float(hdr.get("x-synth-seconds", 0)),
+                       float(hdr.get("x-queue-seconds", 0)))
                 return
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
                 last = e
@@ -206,8 +262,14 @@ def main() -> None:
         with lock:
             print(f"\n  đoạn {idx + 1} HỎNG sau {args.retries + 1} lần: {last}")
 
-    with ThreadPoolExecutor(max_workers=conc) as ex:
-        list(ex.map(one, todo))
+    if args.batch > 1:
+        groups = [todo[k:k + args.batch] for k in range(0, len(todo), args.batch)]
+        print(f"           {len(groups)} lô, mỗi lô tối đa {args.batch} đoạn, định dạng {fmt}")
+        with ThreadPoolExecutor(max_workers=min(conc, max(1, len(groups)))) as ex:
+            list(ex.map(send_batch, groups))
+    else:
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            list(ex.map(one, todo))
     wall = time.perf_counter() - t0
     print()
 

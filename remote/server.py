@@ -38,6 +38,7 @@ import threading
 import time
 import uuid
 import wave
+import zipfile
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -170,6 +171,7 @@ class Pool:
                 "uptime_sec": round(time.time() - self.started),
                 "voices": {k: v[0] for k, v in self.voices.items()},
                 "backend": self.backend,
+                "formats": (sorted(FORMATS) if _sf else ["wav"]),
             }
 
 
@@ -185,6 +187,34 @@ def gpu_info() -> dict:
                 "vram_free_mib": int(free), "compute_cap": cc}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+
+
+# soundfile khong bat buoc. Thieu no thi van chay, chi la tra ve WAV tho.
+try:
+    import soundfile as _sf
+except Exception:
+    _sf = None
+
+# Do tren giong da sinh, 19.4s audio:
+#   WAV 909 KB | FLAC 478 KB (1.9x, khong mat du lieu) | Opus 84 KB (10.8x)
+# Duong ham cloudflared bi gioi han bang thong nen day la cho an tien nhat.
+FORMATS = {
+    "wav":  (None, None, "audio/wav"),
+    "flac": ("FLAC", "PCM_16", "audio/flac"),
+    "opus": ("OGG", "OPUS", "audio/ogg"),
+    "vorbis": ("OGG", "VORBIS", "audio/ogg"),
+}
+
+
+def encode_audio(pcm: np.ndarray, fmt: str) -> tuple[bytes, str]:
+    """Ma hoa PCM theo dinh dang yeu cau. Tra ve (bytes, duoi file)."""
+    fmt = (fmt or "wav").lower()
+    if fmt == "wav" or _sf is None or fmt not in FORMATS:
+        return wav_bytes(pcm), "wav"
+    container, subtype, _ = FORMATS[fmt]
+    buf = io.BytesIO()
+    _sf.write(buf, pcm, SAMPLE_RATE, format=container, subtype=subtype)
+    return buf.getvalue(), ("flac" if fmt == "flac" else "ogg")
 
 
 def wav_bytes(pcm: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
@@ -252,9 +282,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         assert POOL is not None
-        if self.path.startswith("/health"):
+        route = self.path.split("?")[0].rstrip("/")
+        if route == "/health":
             self._json(200, {"ok": True, "gpu": gpu_info(), **POOL.stats()})
-        elif self.path.startswith("/voices"):
+        elif route == "/voices":
             if self._auth():
                 self._json(200, {"voices": POOL.stats()["voices"]})
         else:
@@ -264,15 +295,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth():
             return
         assert POOL is not None
+        route = self.path.split("?")[0].rstrip("/")
         try:
-            if self.path.startswith("/voice"):
+            if route == "/voice":
                 d = self._body()
                 pcm = read_wav_bytes(base64.b64decode(d["wav_b64"]))
                 vid = POOL.add_voice(d.get("name", "voice"), pcm, d["text"])
                 self._json(200, {"voice_id": vid,
                                  "seconds": round(len(pcm) / SAMPLE_RATE, 2)})
 
-            elif self.path.startswith("/tts"):
+            elif route == "/tts":
                 d = self._body()
                 if not d.get("text"):
                     self._json(400, {"error": "thieu 'text'"})
@@ -297,6 +329,56 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(b)
+            elif route == "/tts_batch":
+                # Gom nhieu doan vao MOT request.
+                #
+                # Do that qua cloudflared: moi request ton ~2.9s do tre co
+                # dinh bat ke dai ngan. Gui 33 doan rieng le la tra 33 lan do
+                # tre do. Gom lai thi tra mot lan, va quan trong hon: ca 4
+                # worker cung lam mot lo nen GPU khong nam khong cho mang.
+                d = self._body()
+                items = d.get("items") or []
+                if not items:
+                    self._json(400, {"error": "thieu 'items'"})
+                    return
+                fmt = (d.get("format") or "wav").lower()
+                jobs = []
+                for it in items:
+                    j = Job(text=it["text"], voice_id=d.get("voice_id"),
+                            lang=d.get("lang", "None"), steps=int(d.get("steps", 16)),
+                            seed=int(d.get("seed", 42)), instruct=d.get("instruct"))
+                    jobs.append((it.get("i"), j))
+                    POOL.submit(j)
+
+                deadline = time.time() + float(d.get("timeout", 1800))
+                buf = io.BytesIO()
+                meta = {"format": fmt, "items": []}
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+                    for idx, j in jobs:
+                        if not j.done.wait(timeout=max(1, deadline - time.time())):
+                            self._json(504, {"error": f"qua han cho o item {idx}"})
+                            return
+                        if j.error:
+                            meta["items"].append({"i": idx, "error": j.error})
+                            continue
+                        blob, ext = encode_audio(j.audio, fmt)
+                        z.writestr(f"{idx}.{ext}", blob)
+                        meta["items"].append({
+                            "i": idx, "file": f"{idx}.{ext}",
+                            "synth": round(j.wall, 3),
+                            "audio": round(len(j.audio) / SAMPLE_RATE, 3),
+                        })
+                    z.writestr("meta.json", json.dumps(meta, ensure_ascii=False))
+
+                b = buf.getvalue()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(b)))
+                self.send_header("X-Items", str(len(jobs)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(b)
+
             else:
                 self._json(404, {"error": "khong co route nay"})
         except Exception as e:  # noqa: BLE001
