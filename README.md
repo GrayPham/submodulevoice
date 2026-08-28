@@ -36,6 +36,15 @@ build-win.cmd cuda      # bản CUDA -> omnivoice.cpp\build-cuda\omnivoice.dll
 python -m pyomnivoice.download
 ```
 
+> **`omnivoice.cpp` là repo git riêng.** Nó có `.git` của chính nó nên trình
+> soạn thảo sẽ hiện nó thành một repo thứ hai trong Source Control. Đừng commit
+> vào đó — ta chỉ clone về để build. `.vscode/settings.json` đã ẩn nó khỏi
+> danh sách, và `build-win.cmd` tự thêm `build-*/` vào
+> `omnivoice.cpp/.git/info/exclude` vì `.gitignore` của upstream chỉ có
+> `build/`, còn ta đặt tên `build-cpu/` với `build-cuda/` — không khai báo thì
+> git của họ báo bẩn 650 file. Dùng `info/exclude` chứ không sửa `.gitignore`
+> của họ: đó là ignore riêng của máy mình, không mất khi `git pull`.
+
 `pyomnivoice` tự tìm `omnivoice.dll`: ưu tiên `build-cuda`, sau đó `build-cpu`.
 Muốn ép dùng bản nào thì đặt biến môi trường `OMNIVOICE_LIB` trỏ tới thư mục
 chứa DLL.

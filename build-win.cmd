@@ -29,6 +29,19 @@ if not exist "%NINJA%" set NINJA=C:\Program Files (x86)\Microsoft Visual Studio\
 
 cd /d "%~dp0omnivoice.cpp"
 
+rem omnivoice.cpp la repo rieng, .gitignore cua ho chi co build/ trong khi ta
+rem dat ten build-cpu/ va build-cuda/. Khong khai bao thi git cua ho bao ban
+rem hang tram file. Ghi vao info/exclude: ignore rieng cua may minh, khong
+rem dung vao .gitignore cua upstream, khong mat khi pull.
+if exist ".git\info\exclude" (
+    findstr /C:"build-*/" ".git\info\exclude" >nul 2>&1 || (
+        echo.>> ".git\info\exclude"
+        echo # thu muc build cua submodulevoice/build-win.cmd>> ".git\info\exclude"
+        echo build-*/>> ".git\info\exclude"
+        echo [build-win] da them build-*/ vao omnivoice.cpp\.git\info\exclude
+    )
+)
+
 if /I "%BACKEND%"=="cuda" goto cuda
 
 :cpu
