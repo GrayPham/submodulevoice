@@ -192,11 +192,20 @@ class SecureVoiceLoader:
         print(f"[RUN] Giải nén -> {app_dir}: {os.listdir(app_dir)[:12]}", flush=True)
 
         api_key = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
-        # libomnivoice.so cần libggml*.so cùng thư mục; Linux không có
-        # add_dll_directory nên phải chỉ LD_LIBRARY_PATH tới bin cho linker thấy.
+        # libomnivoice.so cần libggml*.so (cùng thư mục) và, với backend CUDA,
+        # cần libcudart.so.12/libcublas… của CUDA runtime. Linux không có
+        # add_dll_directory nên gom hết vào LD_LIBRARY_PATH cho linker thấy:
+        #   - bin của gói (libggml*)
+        #   - các thư mục CUDA runtime phổ biến (nếu có)
         bin_dir = os.path.join(app_dir, "omnivoice.cpp", "build", "bin")
+        ld_dirs = [bin_dir] + [d for d in (
+            "/usr/local/cuda/lib64",
+            "/usr/local/cuda/targets/x86_64-linux/lib",
+            "/usr/lib/x86_64-linux-gnu",
+        ) if os.path.isdir(d)]
         env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1",
-                   LD_LIBRARY_PATH=bin_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""))
+                   LD_LIBRARY_PATH=os.pathsep.join(
+                       ld_dirs + [os.environ.get("LD_LIBRARY_PATH", "")]))
         # server.py là .so Cython — KHÔNG chạy được bằng `python -m` (runpy cần
         # code object mà extension module không phơi ra: "No code object
         # available"). Import trực tiếp rồi gọi main() thì .so chạy bình thường.
