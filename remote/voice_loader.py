@@ -231,31 +231,39 @@ class SecureVoiceLoader:
         # phiên chết. Nên cứ giữ ô sống, thử lại mãi với backoff có trần.
         restarts = 0
         started_at = time.monotonic()
-        while not self._stop.is_set():
-            if server.poll() is None:
-                self._stop.wait(5)
-                continue
-            rc = server.returncode
-            if self._stop.is_set():
-                break
-            # Nếu server vừa chạy ổn định >2 phút thì coi lần chết này là sự cố
-            # mới, đặt lại nhịp backoff về nhỏ.
-            if time.monotonic() - started_at > 120:
-                restarts = 0
-            restarts += 1
-            backoff = min(10 * restarts, 60)   # trần 60s, không bỏ cuộc
-            print(f"[WATCHDOG] Server thoát rc={rc} (lần {restarts}); dựng lại "
-                  f"sau {backoff}s. URL/key giữ nguyên.", flush=True)
-            if restarts >= 5:
-                print("[WATCHDOG] Server chết liên tục — vẫn GIỮ Ô CHẠY và thử "
-                      "lại mỗi ~60s để runtime không bị Colab ngắt. Xem [server] "
-                      "log để biết vì sao.", flush=True)
-            if self._stop.wait(backoff):
-                break
-            server = self._launch_server()
-            self._wait_health(server, timeout=300)
-            started_at = time.monotonic()
-        self._cleanup()
+        # try/finally: dừng ô (KeyboardInterrupt) hay thoát kiểu gì cũng PHẢI
+        # giết server con. Không có nó, server chạy start_new_session sẽ thành
+        # zombie giữ cổng 8770 + VRAM -> chạy lại báo "Address already in use"
+        # và GPU không được giải phóng.
+        try:
+            while not self._stop.is_set():
+                if server.poll() is None:
+                    self._stop.wait(5)
+                    continue
+                rc = server.returncode
+                if self._stop.is_set():
+                    break
+                # Server vừa chạy ổn định >2 phút thì coi lần chết này là sự cố
+                # mới, đặt lại nhịp backoff.
+                if time.monotonic() - started_at > 120:
+                    restarts = 0
+                restarts += 1
+                backoff = min(10 * restarts, 60)   # trần 60s, không bỏ cuộc
+                print(f"[WATCHDOG] Server thoát rc={rc} (lần {restarts}); dựng lại "
+                      f"sau {backoff}s. URL/key giữ nguyên.", flush=True)
+                if restarts >= 5:
+                    print("[WATCHDOG] Server chết liên tục — vẫn GIỮ Ô CHẠY và thử "
+                          "lại mỗi ~60s để runtime không bị Colab ngắt. Xem "
+                          "[server] log để biết vì sao.", flush=True)
+                if self._stop.wait(backoff):
+                    break
+                server = self._launch_server()
+                self._wait_health(server, timeout=300)
+                started_at = time.monotonic()
+        finally:
+            self._stop.set()
+            self._kill_children()
+            self._cleanup()
 
     def _launch_server(self) -> subprocess.Popen:
         """Bật một tiến trình server, bơm log ra ngoài. Dùng cho cả lần đầu lẫn
