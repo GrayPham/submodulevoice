@@ -6,26 +6,28 @@ cả phía tool lẫn phía server.
 
 ---
 
-## 1. Tóm tắt (đã đính chính)
+## 1. Tóm tắt (HỒ SƠ CHƯA ĐÓNG — nguyên nhân chưa chứng minh)
 
-Server voice (OmniVoice INT4, Colab T4, 4 worker) crash `rc=-6` (SIGABRT do
-`ggml_abort`) với backtrace trỏ vào `ov_extract_voice_ref` — hàm trích giọng mẫu
-(đường `/voice`), **ngay ở job đầu tiên của một server vừa khởi động**.
+Đã ghi nhận HAI cú sập, cùng ngắt quãng, khác chỗ nổ:
+- **rc=-11** (SIGSEGV) trong `[MaskGIT]` (tổng hợp).
+- **rc=-6** (SIGABRT, `GGML_ASSERT(buffer)`) trong `ov_extract_voice_ref` (đăng
+  ký giọng, đường `/voice`).
 
-**Nguyên nhân thật (đội tool phát hiện, đã đối chiếu và đồng ý):**
-> Client gửi **WAV 16 kHz**. Trong `read_wav_bytes` của server, nhánh
-> `sr != 24000` dùng **`np.interp`** nội suy tuyến tính lên 24 kHz. Audio đó qua
-> `load_voice` → `ov_extract_voice_ref` → **`GGML_ASSERT(buffer) failed`**. Đây
-> là nhánh duy nhất mà bộ repro 65 job không chạm tới, vì giọng mẫu dùng để test
-> đã sẵn 24 kHz nên không kích hoạt resample.
+**Bằng chứng then chốt (đội tool):** đúng file 16 kHz gây sập đã đăng ký **trót
+lọt ít nhất 2 lần trước đó** (0,99s và 1,50s), rồi mới sập lần 3. Phân tích nội
+dung file: **không** NaN/Inf/tràn biên/im lặng dài; np.interp vs soxr chỉ lệch
+tối đa 0,108 (thuần chồng phổ).
 
-**Đính chính một chẩn đoán sai trong bản báo cáo trước:** bản trước quy cú sập
-này cho việc "engine 0 bị hai luồng dùng chung". Điều đó **không đúng cho cú sập
-này** — crash xảy ra ở job ĐẦU của server vừa lên, lúc chưa có synthesis nào
-chạy để giẫm lên engine 0. Việc dùng chung engine 0 vẫn là **một bug tiềm ẩn
-khác** (đã vá riêng, xem mục 5), nhưng không phải nguyên nhân của cú sập quan sát
-được. Sai sót do bản trước suy ra tính đồng thời từ backtrace mà không có bằng
-chứng; chứng cứ "job đầu của server mới" của đội tool đã bác bỏ nó.
+**Hệ quả suy luận (chưa phải kết luận):**
+- Nếu **nội dung 16 kHz** là nguyên nhân thì phải sập MỌI lần → nhưng không →
+  **loại nội dung khỏi vai trò nguyên nhân tất định.**
+- Tính ngắt quãng "cùng file, chạy được rồi mới sập" **khớp với một race**: chỉ
+  sập khi thao tác chồng lấn nhau đúng thời điểm. Đây là chữ ký của việc **hai
+  luồng dùng chung ggml context** (vd `/voice` chen vào lúc worker 0 đang tổng
+  hợp), và có thể gắn CẢ HAI cú sập về một gốc — nổ ở bất kỳ nhánh nào đang chạy.
+- **Chưa chứng minh.** Cả hai bản báo cáo trước đều đã nói quá theo hai hướng
+  ngược nhau (một bên "engine-lock là gốc", một bên "16 kHz là gốc"). Trạng thái
+  đúng hiện tại: **tương quan, chưa nhân quả; cần thí nghiệm phân định (mục 8).**
 
 ---
 
@@ -113,4 +115,43 @@ làm buffer null. Đề nghị:
 `remote/server.py` nằm trong gói mã hoá trên R2, nên phải:
 1. Rebuild gói bằng `OmniVoice_Build_Secure_Colab.ipynb`.
 2. Upload đè lên R2 (`omnivoice-cp313-linux-x86_64@1.0.0`).
-3. Chạy lại `/voice` với WAV 16 kHz — không còn sập, resample sạch.
+3. Chạy bài phân định (mục 8) trên server đã vá.
+
+---
+
+## 8. Thí nghiệm phân định (cần chạy — đừng đóng hồ sơ)
+
+Xác nhận "chạy được một lần" KHÔNG chứng minh gì: 16 kHz vốn đã chạy 2/3 lần. Chỉ
+tỉ lệ sập qua nhiều lần lặp mới cho tín hiệu.
+
+**Tách bạch hai giả thuyết:**
+- **Nhánh A — nội dung:** 30 lần `/voice` với WAV 16 kHz THÔ, **tuần tự, không có
+  synthesis chạy song song**. Nếu sạch → nội dung 16 kHz vô can.
+- **Nhánh B — race:** vừa chạy synthesis liên tục trên các worker, **vừa bơm
+  `/voice` 16 kHz thô chen vào** (nhiều lần). Đây mới tạo điều kiện chồng lấn.
+
+**Đọc kết quả:**
+- A sạch + B sập (trên bản KHÔNG có engine-lock) → nguyên nhân là **race dùng
+  chung engine**. Engine-lock là fix đúng.
+- B vẫn sập cả khi CÓ engine-lock → còn một race rộng hơn trong ggml
+  scheduler/CUDA khi nhiều worker chạy song song → cần đội engine điều tra
+  thread-safety (compute-sanitizer `--tool racecheck`, core dump lấy backtrace).
+- A cũng sập → nội dung/độ dài sau resample thực sự có vai trò → soi lại
+  `ov_extract_voice_ref`.
+
+Ghi **tỉ lệ sập**, không chỉ pass/fail một lần. So bản vá soxr với bản chưa vá
+nếu còn giữ được.
+
+---
+
+## 9. Hai bản vá — giữ cả hai bất kể kết quả phân định
+
+Cả hai đúng và đáng giữ dù thí nghiệm mục 8 ra sao:
+- **soxr thay np.interp** (`read_wav_bytes`): tiếng sạch hơn hẳn (np.interp không
+  lọc chống chồng phổ), + chặn audio < 0.5s. Là cải thiện chất lượng + phòng thủ.
+- **engine-lock** (`Pool`): dùng chung engine 0 giữa add_voice và worker 0 là bug
+  thật; khoá riêng từng engine là đúng dù nó có phải nguyên nhân cú sập này hay
+  không.
+
+Điều CHƯA làm được: chứng minh bản vá nào (hoặc cả hai) thực sự chặn crash. Đó là
+việc của mục 8.
