@@ -157,9 +157,34 @@ def main() -> None:
     elif args.instruct:
         print(f"giọng    : voice design '{args.instruct}'")
 
-    paras = [re.sub(r"\s+", " ", p.strip())
-             for p in re.split(r"\n\s*\n", Path(args.script).read_text(encoding="utf-8"))
-             if p.strip()]
+    raw_paras = [re.sub(r"\s+", " ", p.strip())
+                 for p in re.split(r"\n\s*\n", Path(args.script).read_text(encoding="utf-8"))
+                 if p.strip()]
+    # Server chốt <= MAX_CHARS ký tự/đoạn (đoạn dài làm phình VRAM rồi crash).
+    # Chia nhỏ đoạn quá dài theo câu, gộp câu lại tới sát ngưỡng để không tạo
+    # quá nhiều mẩu vụn. Câu đơn lẻ vẫn quá dài thì cắt cứng theo ký tự.
+    MAX_CHARS = 500
+    paras = []
+    for p in raw_paras:
+        if len(p) <= MAX_CHARS:
+            paras.append(p)
+            continue
+        cur = ""
+        for sent in re.split(r"(?<=[.!?…。！？])\s+", p):
+            while len(sent) > MAX_CHARS:      # câu quá dài: cắt cứng
+                if cur:
+                    paras.append(cur); cur = ""
+                paras.append(sent[:MAX_CHARS]); sent = sent[MAX_CHARS:]
+            if len(cur) + len(sent) + 1 <= MAX_CHARS:
+                cur = (cur + " " + sent).strip()
+            else:
+                if cur:
+                    paras.append(cur)
+                cur = sent
+        if cur:
+            paras.append(cur)
+    if len(paras) != len(raw_paras):
+        print(f"chia đoạn: {len(raw_paras)} đoạn gốc -> {len(paras)} đoạn (mỗi đoạn <= {MAX_CHARS} ký tự)")
     print(f"kịch bản : {len(paras)} đoạn, {sum(len(p) for p in paras)} ký tự")
     # Mỗi đoạn được ghi ra đĩa NGAY khi xong. Colab đứt giữa chừng thì chạy lại
     # đúng lệnh này là nó bỏ qua phần đã có và làm tiếp — không mất công GPU đã

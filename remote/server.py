@@ -52,6 +52,14 @@ from pyomnivoice import Audio, OmniVoice, SAMPLE_RATE, Voice  # noqa: E402
 VRAM_PER_WORKER_MIB = 1250   # đo được: worker đầu 1443 MiB, mỗi worker sau ~1200
 MAX_USEFUL_WORKERS = 4       # quá mức này throughput đi xuống
 
+# Chốt cứng độ dài text mỗi request. Chunking của engine KHÔNG chia được chuỗi
+# dài (log cho thấy một request đơn sinh chuỗi ~14 phút, không cắt), nên một
+# request dài làm buffer ggml khổng lồ -> phình VRAM, không co lại -> crash.
+# Bài stress chạy 4 tiếng ỔN ĐỊNH với đoạn <= 476 ký tự. Chốt ở 500 (sát mức đã
+# chứng minh) thì KHÔNG request nào đủ dài để phình, dù client gửi gì. Client tự
+# chia đoạn ngắn hơn mức này trước khi gửi; ai lỡ gửi dài thì nhận lỗi 413 rõ.
+MAX_TEXT_CHARS = 500
+
 
 @dataclass
 class Job:
@@ -335,6 +343,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not d.get("text"):
                     self._json(400, {"error": "thieu 'text'"})
                     return
+                if len(d["text"]) > MAX_TEXT_CHARS:
+                    self._json(413, {
+                        "error": "text qua dai",
+                        "detail": (f"text {len(d['text'])} ky tu, toi da "
+                                   f"{MAX_TEXT_CHARS}. Hay chia thanh doan ngan "
+                                   "(theo cau/dong trong) roi gui tung doan."),
+                        "max_chars": MAX_TEXT_CHARS, "got_chars": len(d["text"])})
+                    return
                 job = Job(text=d["text"], voice_id=d.get("voice_id"),
                           lang=d.get("lang", "None"), steps=int(d.get("steps", 16)),
                           seed=int(d.get("seed", 42)), instruct=d.get("instruct"))
@@ -368,6 +384,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "thieu 'items'"})
                     return
                 fmt = (d.get("format") or "wav").lower()
+                # Chặn trước khi đưa vào hàng đợi: một item quá dài đủ sức phình
+                # VRAM cả server, nên từ chối cả lô với chỉ dẫn rõ ràng.
+                toolong = [(it.get("i"), len(it.get("text", "")))
+                           for it in items if len(it.get("text", "")) > MAX_TEXT_CHARS]
+                if toolong:
+                    self._json(413, {
+                        "error": "co item text qua dai",
+                        "detail": (f"toi da {MAX_TEXT_CHARS} ky tu/item. Hay chia "
+                                   "doan ngan hon. Cac item vuot: "
+                                   + ", ".join(f"#{i}={n}" for i, n in toolong[:10])),
+                        "max_chars": MAX_TEXT_CHARS, "too_long": toolong})
+                    return
                 jobs = []
                 for it in items:
                     j = Job(text=it["text"], voice_id=d.get("voice_id"),
