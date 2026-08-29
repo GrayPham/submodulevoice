@@ -250,9 +250,22 @@ def read_wav_bytes(b: bytes) -> np.ndarray:
     if ch > 1:
         x = x.reshape(-1, ch).mean(axis=1)
     if sr != SAMPLE_RATE:
-        n = int(round(len(x) * SAMPLE_RATE / sr))
-        x = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x).astype(np.float32)
-    return np.ascontiguousarray(x, dtype=np.float32)
+        # Resample bằng soxr (có lọc chống chồng phổ), KHÔNG dùng np.interp.
+        # np.interp là nội suy tuyến tính không lọc — vừa nghe rè, vừa từng làm
+        # ov_extract_voice_ref sập (GGML_ASSERT(buffer)) với audio tần số lạ như
+        # 16 kHz. soxr cho audio 24 kHz sạch, đã kiểm chứng không gây sập.
+        try:
+            import soxr
+        except ImportError as e:
+            raise ValueError(
+                f"WAV {sr} Hz cần resample về {SAMPLE_RATE} Hz nhưng thiếu soxr; "
+                "hãy gửi WAV 24 kHz.") from e
+        x = soxr.resample(np.ascontiguousarray(x, dtype=np.float32), sr, SAMPLE_RATE)
+    x = np.ascontiguousarray(x, dtype=np.float32)
+    if len(x) < SAMPLE_RATE // 2:   # < 0.5s thì quá ngắn để trích giọng an toàn
+        raise ValueError(
+            f"giọng mẫu quá ngắn ({len(x) / SAMPLE_RATE:.2f}s), cần ít nhất 0.5s")
+    return x
 
 
 POOL: Pool | None = None

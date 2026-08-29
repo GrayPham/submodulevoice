@@ -1,135 +1,116 @@
-# Báo cáo sự cố + khắc phục: server voice crash (SIGSEGV/SIGABRT)
+# Báo cáo sự cố + khắc phục: server voice crash khi đăng ký giọng
 
-**Ngày:** 2026-08-29
-**Trạng thái:** ĐÃ TÌM RA NGUYÊN NHÂN GỐC VÀ SỬA.
-
----
-
-## 1. Tóm tắt
-
-Server voice (OmniVoice INT4, Colab T4, 4 worker) crash trong lúc phục vụ:
-lần đầu `rc=-11` (SIGSEGV) khi đang tổng hợp, lần sau `rc=-6` (SIGABRT) với
-backtrace đầy đủ. **Cả hai là cùng một nguyên nhân gốc, và đã xác nhận chắc
-chắn nhờ backtrace:**
-
-> **Engine 0 bị hai luồng dùng cùng lúc.** `add_voice()` (đăng ký giọng, chạy
-> từ luồng HTTP) và worker 0 (tổng hợp, chạy từ hàng đợi) **cùng dùng
-> `self.engines[0]`** mà không khoá. Mỗi engine có ggml context/scheduler
-> riêng, KHÔNG an toàn đa luồng. Khi một request `/voice` chen vào đúng lúc
-> worker 0 đang tổng hợp → ggml compute trên context bị hai luồng giẫm lên
-> nhau → `GGML_ASSERT(buffer) failed` hoặc segfault.
-
-Đây là **bug ở tầng điều phối của server (Pool), không phải lỗi engine
-OmniVoice**. Engine đúng như thiết kế: mỗi context phải dùng một luồng tại một
-thời điểm. Server đã vi phạm điều đó.
-
-**Đã sửa:** thêm khoá riêng cho từng engine (`engine_locks[i]`); add_voice giữ
-khoá engine 0, mỗi worker giữ khoá engine của mình → không còn hai luồng dùng
-chung một context.
+**Ngày:** 2026-08-29 (cập nhật sau phát hiện của đội tool)
+**Trạng thái:** Đã xác định NGUYÊN NHÂN THẬT của cú sập quan sát được, và đã vá
+cả phía tool lẫn phía server.
 
 ---
 
-## 2. Môi trường
+## 1. Tóm tắt (đã đính chính)
 
-| Thành phần | Giá trị |
-|---|---|
-| GPU | Tesla T4, sm75, VRAM 15360 MiB |
-| Backend | CUDA0 (ggml, `GGML_BACKEND_DL`) |
-| Runtime C++ | omnivoice.cpp prebuilt `omnivoice-linux-cuda-sm75` |
-| Model | profile `lite` INT4 (Q4_K_M backbone + Q8_0 tokenizer) |
-| Python | cp313, `pyomnivoice`/`remote.server` biên dịch Cython → .so |
-| Worker | 4 engine độc lập, hàng đợi dùng chung |
+Server voice (OmniVoice INT4, Colab T4, 4 worker) crash `rc=-6` (SIGABRT do
+`ggml_abort`) với backtrace trỏ vào `ov_extract_voice_ref` — hàm trích giọng mẫu
+(đường `/voice`), **ngay ở job đầu tiên của một server vừa khởi động**.
+
+**Nguyên nhân thật (đội tool phát hiện, đã đối chiếu và đồng ý):**
+> Client gửi **WAV 16 kHz**. Trong `read_wav_bytes` của server, nhánh
+> `sr != 24000` dùng **`np.interp`** nội suy tuyến tính lên 24 kHz. Audio đó qua
+> `load_voice` → `ov_extract_voice_ref` → **`GGML_ASSERT(buffer) failed`**. Đây
+> là nhánh duy nhất mà bộ repro 65 job không chạm tới, vì giọng mẫu dùng để test
+> đã sẵn 24 kHz nên không kích hoạt resample.
+
+**Đính chính một chẩn đoán sai trong bản báo cáo trước:** bản trước quy cú sập
+này cho việc "engine 0 bị hai luồng dùng chung". Điều đó **không đúng cho cú sập
+này** — crash xảy ra ở job ĐẦU của server vừa lên, lúc chưa có synthesis nào
+chạy để giẫm lên engine 0. Việc dùng chung engine 0 vẫn là **một bug tiềm ẩn
+khác** (đã vá riêng, xem mục 5), nhưng không phải nguyên nhân của cú sập quan sát
+được. Sai sót do bản trước suy ra tính đồng thời từ backtrace mà không có bằng
+chứng; chứng cứ "job đầu của server mới" của đội tool đã bác bỏ nó.
 
 ---
 
-## 3. Bằng chứng — backtrace lần crash thứ hai (rc=-6)
+## 2. Chi tiết kỹ thuật đáng chú ý
+
+So `np.interp` với `soxr` trên cùng input 16 kHz → 24 kHz:
+
+| | số mẫu ra | dtype | contiguous |
+|---|---|---|---|
+| np.interp | 28800 | float32 | có |
+| soxr | 28800 | float32 | có |
+
+→ **Kích thước/kiểu/bố cục GIỐNG HỆT nhau.** Khác biệt duy nhất là **nội dung**:
+`np.interp` là nội suy tuyến tính không có bộ lọc chống chồng phổ (aliasing),
+`soxr` thì có. Vì shape giống nhau mà một cái sập một cái không, **crash không
+phải lỗi shape** — nó liên quan tới nội dung audio (có thể là artefact aliasing
+đưa feature vào một trạng thái suy biến) hoặc một điểm yếu trong
+`ov_extract_voice_ref`. Đây là manh mối quan trọng cho đội engine.
+
+---
+
+## 3. Backtrace (bằng chứng)
 
 ```
-[server] /content/omnivoice.cpp/ggml/src/ggml-backend.cpp:189: GGML_ASSERT(buffer) failed
-[server] libggml-base.so.0(ggml_print_backtrace...)
-[server] libggml-base.so.0(ggml_abort...)
-[server] libggml-cuda.so.0(...)
-[server] libggml-base.so.0(ggml_backend_sched_graph_compute_async...)
-[server] libomnivoice.so(ov_extract_voice_ref+0x1163)      ← ĐĂNG KÝ GIỌNG
-[server] pyomnivoice/core.cpython-...so
-[server] remote/server.cpython-...so
-[RUN] Server thoát rc=-6
+/content/omnivoice.cpp/ggml/src/ggml-backend.cpp:189: GGML_ASSERT(buffer) failed
+libggml-base.so.0(ggml_abort...)
+libggml-cuda.so.0(...)
+libggml-base.so.0(ggml_backend_sched_graph_compute_async...)
+libomnivoice.so(ov_extract_voice_ref+0x1163)     ← trích giọng mẫu (/voice)
+pyomnivoice/core.cpython-...so
+remote/server.cpython-...so
+[RUN] Server thoát rc=-6                          ← SIGABRT
 ```
-
-`ov_extract_voice_ref` là hàm xử lý giọng mẫu (gọi khi `/voice`). `GGML_ASSERT
-(buffer)` nghĩa là một tensor chưa được cấp buffer khi compute — hệ quả của
-việc scheduler của engine 0 bị luồng worker 0 đụng vào song song.
-
-Lần crash đầu (rc=-11) backtrace ngắn hơn nhưng crash trong `[MaskGIT]` (tổng
-hợp) — chính là chiều ngược lại: worker 0 đang tổng hợp thì `/voice` đụng vào
-engine 0. Cùng một gốc.
 
 ---
 
-## 4. Nguyên nhân gốc (mã nguồn)
+## 4. Khắc phục phía server (đã áp, `read_wav_bytes`)
 
-Trong `remote/server.py`, lớp `Pool`:
+Thay `np.interp` bằng `soxr` cho mọi tần số khác 24 kHz + chặn audio quá ngắn.
+Không thể trông chờ mọi client tự resample — 16 kHz cực phổ biến (điện thoại, ghi
+âm cũ), client nào gửi cũng hạ cả server. **Server phải tự bền.**
 
 ```python
-def add_voice(self, ...):
-    voice = self.engines[0].load_voice(tmp, text)   # luồng HTTP, engine 0
-
-def _worker(self, wid):
-    eng = self.engines[wid]                          # worker wid
-    ...
-    a = eng.say(...)                                 # worker 0 -> engine 0
+if sr != SAMPLE_RATE:
+    import soxr
+    x = soxr.resample(np.ascontiguousarray(x, dtype=np.float32), sr, SAMPLE_RATE)
+x = np.ascontiguousarray(x, dtype=np.float32)
+if len(x) < SAMPLE_RATE // 2:          # < 0.5s
+    raise ValueError("giọng mẫu quá ngắn, cần >= 0.5s")
 ```
 
-→ `engines[0]` bị **luồng HTTP (add_voice)** và **luồng worker 0** dùng đồng
-thời. Không có khoá. ggml context không chịu được điều này.
-
-**Vì sao bài stress 4 tiếng trước không sập:** client lúc đó đăng ký giọng MỘT
-lần lúc đầu, xong mới gửi toàn bộ TTS → add_voice hoàn tất trước khi worker 0
-bắt đầu → không chồng lấn. Client thật/đợt test sau đăng ký giọng chen vào lúc
-đang chạy → chồng lấn → sập.
+Đã test tại chỗ: 8k/16k/24k/44.1k đều ra 24 kHz float32 sạch; audio < 0.5s trả
+lỗi rõ ràng (handler bọc try/except → HTTP 500, KHÔNG abort tiến trình). Đội tool
+cũng đã resample 24 kHz phía client (42/42 pass) — hai lớp bảo vệ, phía server là
+lớp nền không phụ thuộc client.
 
 ---
 
-## 5. Cách khắc phục (đã áp vào server.py)
+## 5. Bug tiềm ẩn thứ hai (đã vá riêng, KHÔNG phải cú sập này)
 
-Khoá riêng từng engine để mỗi ggml context chỉ một luồng dùng tại một thời điểm:
-
-```python
-# __init__:
-self.engine_locks = [threading.Lock() for _ in range(n)]
-
-# add_voice:
-with self.engine_locks[0]:
-    voice = self.engines[0].load_voice(tmp, text)
-
-# _worker(wid):
-with self.engine_locks[wid]:
-    a = eng.say(...)
-```
-
-Chi phí: khi đăng ký giọng, chỉ **worker 0** bị chặn trong ~2 giây (thời gian
-trích giọng); các worker 1..N-1 không ảnh hưởng, vẫn tổng hợp bình thường. Đăng
-ký giọng thưa nên tác động thực tế không đáng kể.
+Trong `Pool`, `add_voice()` chạy `engines[0]` từ luồng HTTP, còn worker 0 cũng
+chạy `engines[0]` từ hàng đợi → nếu `/voice` chen vào lúc worker 0 đang tổng hợp
+thì hai luồng giẫm lên cùng ggml context → sẽ sập. Bộ repro không kích hoạt vì
+luôn đăng ký giọng trước, tổng hợp sau. Đã vá bằng **khoá riêng từng engine**
+(`engine_locks[i]`). Đây là phòng ngừa chủ động, độc lập với cú sập 16 kHz.
 
 ---
 
-## 6. Quá trình khoanh vùng (để đối chiếu)
+## 6. Đề xuất cho đội engine (vá tận gốc)
 
-Trước khi có backtrace, đã thử tái hiện bằng 65 job (5 tuần tự, 8 đồng thời,
-client.py 4 luồng đoạn dài, 40 job hammer, 8 tiếng Việt) — **không sập lần
-nào**, vì tất cả đều đăng ký giọng TRƯỚC rồi mới tổng hợp, không chạm vào điều
-kiện chồng lấn engine 0. Điều này khẳng định thêm: crash chỉ xảy ra khi `/voice`
-và tổng hợp trên worker 0 **thực sự đồng thời** — đúng như nguyên nhân gốc.
+Cú sập là do **abort cả tiến trình** khi gặp input hợp lệ về mặt định dạng nhưng
+làm buffer null. Đề nghị:
+1. `ov_extract_voice_ref` **kiểm tra buffer/độ dài trước khi assert**, trả mã
+   lỗi thay vì `ggml_abort` — một client gửi audio lạ không nên hạ cả server.
+2. Hoặc `read_wav_bytes` phía engine/SDK **từ chối thẳng tần số != 24 kHz** với
+   lỗi rõ ràng, thay vì nội suy rồi crash ngầm.
+3. Tìm hiểu vì sao audio cùng shape nhưng nội dung có aliasing (np.interp) lại
+   làm null buffer, còn audio sạch (soxr) thì không — có thể lộ một nhánh suy
+   biến trong trích đặc trưng.
 
 ---
 
-## 7. Việc cần làm để bản sửa có hiệu lực
+## 7. Việc cần làm để bản sửa server có hiệu lực
 
-`remote/server.py` được **biên dịch vào gói mã hoá** trên R2. Vì vậy phải:
-1. Rebuild gói bằng `OmniVoice_Build_Secure_Colab.ipynb` (biên dịch lại server.py
-   → .so, gộp model).
-2. Upload đè gói mới lên R2 (module `omnivoice-cp313-linux-x86_64@1.0.0`).
-3. Chạy lại client — đăng ký giọng lúc đang tổng hợp không còn sập.
-
-Watchdog trong loader (tự dựng lại khi crash) vẫn là lớp an toàn phụ, nhưng sau
-bản sửa này thì crash do nguyên nhân trên sẽ không còn xảy ra.
+`remote/server.py` nằm trong gói mã hoá trên R2, nên phải:
+1. Rebuild gói bằng `OmniVoice_Build_Secure_Colab.ipynb`.
+2. Upload đè lên R2 (`omnivoice-cp313-linux-x86_64@1.0.0`).
+3. Chạy lại `/voice` với WAV 16 kHz — không còn sập, resample sạch.
