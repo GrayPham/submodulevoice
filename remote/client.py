@@ -160,10 +160,12 @@ def main() -> None:
     raw_paras = [re.sub(r"\s+", " ", p.strip())
                  for p in re.split(r"\n\s*\n", Path(args.script).read_text(encoding="utf-8"))
                  if p.strip()]
-    # Server chốt <= MAX_CHARS ký tự/đoạn (đoạn dài làm phình VRAM rồi crash).
-    # Chia nhỏ đoạn quá dài theo câu, gộp câu lại tới sát ngưỡng để không tạo
-    # quá nhiều mẩu vụn. Câu đơn lẻ vẫn quá dài thì cắt cứng theo ký tự.
-    MAX_CHARS = 500
+    # Gửi CẢ đoạn cho server để ENGINE tự chia (liền mạch, chất lượng như bản C++
+    # chạy trực tiếp) thay vì client cắt vụn (mối nối cứng, giọng kém hơn). Ngưỡng
+    # rộng, chỉ để không vượt trần server (MAX_TEXT_CHARS=8000) — với transcript
+    # đúng, engine chia đoạn theo thời lượng nên VRAM vẫn có trần. Đoạn dài hơn
+    # ngưỡng mới chia theo câu; câu đơn lẻ vẫn quá dài thì cắt cứng theo ký tự.
+    MAX_CHARS = 8000
     paras = []
     for p in raw_paras:
         if len(p) <= MAX_CHARS:

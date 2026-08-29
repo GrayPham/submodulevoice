@@ -52,13 +52,46 @@ from pyomnivoice import Audio, OmniVoice, SAMPLE_RATE, Voice  # noqa: E402
 VRAM_PER_WORKER_MIB = 1250   # đo được: worker đầu 1443 MiB, mỗi worker sau ~1200
 MAX_USEFUL_WORKERS = 4       # quá mức này throughput đi xuống
 
-# Chốt cứng độ dài text mỗi request. Chunking của engine KHÔNG chia được chuỗi
-# dài (log cho thấy một request đơn sinh chuỗi ~14 phút, không cắt), nên một
-# request dài làm buffer ggml khổng lồ -> phình VRAM, không co lại -> crash.
-# Bài stress chạy 4 tiếng ỔN ĐỊNH với đoạn <= 476 ký tự. Chốt ở 500 (sát mức đã
-# chứng minh) thì KHÔNG request nào đủ dài để phình, dù client gửi gì. Client tự
-# chia đoạn ngắn hơn mức này trước khi gửi; ai lỡ gửi dài thì nhận lỗi 413 rõ.
-MAX_TEXT_CHARS = 500
+# Trần độ dài text mỗi request — CHỈ để chặn request vô lý (cả cuốn sách), KHÔNG
+# phải cơ chế chống phình VRAM.
+#
+# Cái "~14 phút không cắt" từng thấy KHÔNG phải giới hạn của chunker: đó là balloon
+# do transcript SAI (ref_weight tí hon -> một câu ước lượng dài gấp bội -> một chunk
+# khổng lồ). Với transcript ĐÚNG, engine tự chia đoạn theo thời lượng (~15s/đoạn),
+# mỗi đoạn nhỏ và xử lý TUẦN TỰ nên pool ggml chỉ nở bằng MỘT đoạn rồi đứng yên —
+# audio 9 phút hay 15 giây đều dùng cùng mức VRAM. Đã chứng minh cục bộ: 731 ký tự
+# -> engine chia 4 đoạn (348/325/301/84 token), VRAM phẳng.
+#
+# Ba lớp an toàn thật sự (không phải cap này): (1) guard transcript ở add_voice()
+# chặn balloon từ gốc; (2) engine chia đoạn nội bộ -> VRAM có trần bằng một đoạn;
+# (3) backstop theo VRAM tiến trình ở _worker() tái tạo engine nếu pool vẫn nở quá.
+# Nhờ vậy để engine TỰ chia (liền mạch, chất lượng như bản C++ chạy trực tiếp)
+# thay vì ép client cắt vụn 500 ký tự (mối nối cứng, giọng kém hơn).
+MAX_TEXT_CHARS = 8000
+
+
+def _proc_gpu_mem_mib() -> float:
+    """VRAM (MiB) mà TIẾN TRÌNH NÀY đang giữ trên GPU, đọc qua nvidia-smi.
+
+    Đây là tín hiệu thật để phát hiện pool ggml nở bất thường (balloon lọt guard).
+    Dùng --query-compute-apps để chỉ tính RAM của PID mình, không tính tiến trình
+    khác dùng chung GPU. Trả 0 nếu không đọc được (không có nvidia-smi) -> backstop
+    tự tắt, các lớp an toàn khác vẫn còn.
+    """
+    try:
+        pid = os.getpid()
+        out = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5).stdout
+        total = 0.0
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == pid:
+                total += float(parts[1])
+        return total
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 @dataclass
@@ -93,6 +126,12 @@ class Pool:
         # Giữ để tái tạo engine khi cần giải phóng VRAM (xem _worker).
         self.profile = profile
         self.models_dir = models_dir
+        # Trần VRAM tiến trình để bắt balloon lọt guard. Nền bình thường ~ n*1250
+        # MiB (worker đầu 1443, mỗi worker sau ~1250). Cộng 4 GiB biên: audio dài
+        # bình thường (pool = một đoạn) không bao giờ chạm; balloon nhảy nhiều GB
+        # nên vẫn bắt. Chỉnh qua env OMNIVOICE_VRAM_BUDGET_MIB nếu muốn.
+        self.vram_budget_mib = float(os.environ.get(
+            "OMNIVOICE_VRAM_BUDGET_MIB", n * VRAM_PER_WORKER_MIB + 4096))
 
         print(f"[server] nap {n} engine, profile {profile} ...", flush=True)
         t0 = time.perf_counter()
@@ -181,15 +220,18 @@ class Pool:
                     a = eng.say(job.text, voice=voice, instruct=job.instruct,
                                 lang=job.lang, steps=job.steps, seed=job.seed)
                     wall = eng.last_wall
-                    # ggml giữ pool VRAM theo chuỗi LỚN NHẤT từng gặp, KHÔNG trả
-                    # lại. Bình thường guard chặn chuỗi dài nên pool có trần. Nếu
-                    # một balloon vẫn lọt (audio > 3 phút — không thể có với text
-                    # <=500 ký tự + transcript đúng), tái tạo engine để giải
-                    # phóng VRAM đã bị pool giữ, tránh cộng dồn tới OOM.
-                    if a.duration > 180:
-                        print(f"[server] worker {wid}: job sinh {a.duration:.0f}s "
-                              f"audio (bất thường) — tái tạo engine để trả VRAM.",
-                              flush=True)
+                    # ggml giữ pool VRAM theo đoạn LỚN NHẤT từng gặp, KHÔNG trả lại.
+                    # Bình thường guard transcript + engine tự chia đoạn giữ pool bằng
+                    # MỘT đoạn (~2GB) — audio 9 phút hay 15 giây đều vậy. Nếu một
+                    # balloon vẫn lọt thì pool nhảy nhiều GB và kẹt; bắt bằng VRAM
+                    # THẬT của tiến trình (KHÔNG theo thời lượng audio — audio dài
+                    # bình thường vẫn ít VRAM), vượt trần thì tái tạo engine wid để
+                    # trả pool, tránh cộng dồn tới OOM.
+                    mem = _proc_gpu_mem_mib()
+                    if self.vram_budget_mib and mem > self.vram_budget_mib:
+                        print(f"[server] worker {wid}: VRAM tien trinh {mem:.0f} MiB > "
+                              f"tran {self.vram_budget_mib:.0f} MiB (audio {a.duration:.0f}s) "
+                              "— tai tao engine de tra VRAM.", flush=True)
                         eng.close()
                         eng = OmniVoice(profile=self.profile, backend="cuda",
                                         models_dir=self.models_dir)
@@ -389,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
                         "max_chars": MAX_TEXT_CHARS, "got_chars": len(d["text"])})
                     return
                 job = Job(text=d["text"], voice_id=d.get("voice_id"),
-                          lang=d.get("lang", "None"), steps=int(d.get("steps", 16)),
+                          lang=d.get("lang", "None"), steps=int(d.get("steps", 32)),
                           seed=int(d.get("seed", 42)), instruct=d.get("instruct"))
                 POOL.submit(job)
                 if not job.done.wait(timeout=float(d.get("timeout", 900))):
@@ -436,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
                 jobs = []
                 for it in items:
                     j = Job(text=it["text"], voice_id=d.get("voice_id"),
-                            lang=d.get("lang", "None"), steps=int(d.get("steps", 16)),
+                            lang=d.get("lang", "None"), steps=int(d.get("steps", 32)),
                             seed=int(d.get("seed", 42)), instruct=d.get("instruct"))
                     jobs.append((it.get("i"), j))
                     POOL.submit(j)
