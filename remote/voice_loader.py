@@ -94,6 +94,9 @@ class SecureVoiceLoader:
         self._server: subprocess.Popen | None = None
         self._tunnel: subprocess.Popen | None = None
         self._work_dir: str | None = None
+        self._app_dir: str | None = None
+        self._env: dict | None = None
+        self._api_key: str = ""
         self._lock = threading.Lock()
 
     # ---------- PHẦN 1: ĐĂNG NHẬP ----------
@@ -191,7 +194,7 @@ class SecureVoiceLoader:
         app_dir = _find_app_dir(work_dir)
         print(f"[RUN] Giải nén -> {app_dir}: {os.listdir(app_dir)[:12]}", flush=True)
 
-        api_key = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+        self._api_key = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
         # libomnivoice.so cần libggml*.so (cùng thư mục) và, với backend CUDA,
         # cần libcudart.so.12/libcublas… của CUDA runtime. Linux không có
         # add_dll_directory nên gom hết vào LD_LIBRARY_PATH cho linker thấy:
@@ -203,32 +206,12 @@ class SecureVoiceLoader:
             "/usr/local/cuda/targets/x86_64-linux/lib",
             "/usr/lib/x86_64-linux-gnu",
         ) if os.path.isdir(d)]
-        env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1",
-                   LD_LIBRARY_PATH=os.pathsep.join(
-                       ld_dirs + [os.environ.get("LD_LIBRARY_PATH", "")]))
-        # server.py là .so Cython — KHÔNG chạy được bằng `python -m` (runpy cần
-        # code object mà extension module không phơi ra: "No code object
-        # available"). Import trực tiếp rồi gọi main() thì .so chạy bình thường.
-        launch = f"import {SERVER_MODULE} as s; s.main()"
-        try:
-            server = subprocess.Popen(
-                [sys.executable, "-c", launch,
-                 "--workers", str(self.workers), "--port", str(SERVER_PORT),
-                 "--key", api_key],
-                cwd=app_dir, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                start_new_session=(os.name == "posix"),
-            )
-        except OSError as e:
-            raise ModuleAccessError(f"Không bật được server: {e}") from e
-        with self._lock:
-            self._server = server
-        # Bơm log server ra ngoài để thấy được tiến độ/lỗi (trước đây là hộp đen).
-        def _pump():
-            for line in server.stdout:
-                print("[server] " + line.rstrip(), flush=True)
-        threading.Thread(target=_pump, daemon=True).start()
+        self._app_dir = app_dir
+        self._env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1",
+                         LD_LIBRARY_PATH=os.pathsep.join(
+                             ld_dirs + [os.environ.get("LD_LIBRARY_PATH", "")]))
 
+        server = self._launch_server()
         if not self._wait_health(server, timeout=300):
             self._kill_children()
             raise ModuleAccessError("Server không lên sau 300s — xem [server] log phía trên.")
@@ -237,17 +220,67 @@ class SecureVoiceLoader:
         public_url = self._open_tunnel()
         print("=" * 62, flush=True)
         print(f"  API URL : {public_url}", flush=True)
-        print(f"  API key : {api_key}", flush=True)
+        print(f"  API key : {self._api_key}", flush=True)
         print(f"  Worker  : {self.workers}", flush=True)
         print("=" * 62, flush=True)
 
-        # Giữ sống: chờ tới khi server chết hoặc kill-switch kích hoạt.
+        # Watchdog: nếu server chết ngoài ý muốn (vd engine segfault rc=-11) mà
+        # license còn hiệu lực, tự dựng lại trên CÙNG cổng — đường hầm giữ
+        # nguyên nên URL/key không đổi. Backoff tăng dần, chặn vòng lặp sập-dựng.
+        restarts = 0
+        last_restart = 0.0
         while not self._stop.is_set():
-            if server.poll() is not None:
-                print(f"[RUN] Server thoát rc={server.returncode}", flush=True)
+            if server.poll() is None:
+                self._stop.wait(5)
+                continue
+            rc = server.returncode
+            if self._stop.is_set():
                 break
-            self._stop.wait(5)
+            # reset đếm nếu lần trước đã chạy ổn định một lúc
+            now = time.monotonic()
+            if now - last_restart > 120:
+                restarts = 0
+            restarts += 1
+            last_restart = now
+            if restarts > 5:
+                print(f"[WATCHDOG] Server chết {restarts} lần liên tiếp (rc={rc}) "
+                      f"— dừng, không dựng lại nữa.", flush=True)
+                break
+            backoff = min(5 * restarts, 30)
+            print(f"[WATCHDOG] Server thoát rc={rc}; dựng lại sau {backoff}s "
+                  f"(lần {restarts}/5). URL giữ nguyên.", flush=True)
+            if self._stop.wait(backoff):
+                break
+            server = self._launch_server()
+            if not self._wait_health(server, timeout=300):
+                print("[WATCHDOG] Dựng lại nhưng server không lên — thử lại.", flush=True)
         self._cleanup()
+
+    def _launch_server(self) -> subprocess.Popen:
+        """Bật một tiến trình server, bơm log ra ngoài. Dùng cho cả lần đầu lẫn
+        khi watchdog dựng lại. server.py là .so Cython nên KHÔNG chạy được bằng
+        `python -m` (runpy cần code object mà extension module không phơi ra:
+        "No code object available"); phải import trực tiếp rồi gọi main()."""
+        launch = f"import {SERVER_MODULE} as s; s.main()"
+        try:
+            server = subprocess.Popen(
+                [sys.executable, "-c", launch,
+                 "--workers", str(self.workers), "--port", str(SERVER_PORT),
+                 "--key", self._api_key],
+                cwd=self._app_dir, env=self._env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                start_new_session=(os.name == "posix"),
+            )
+        except OSError as e:
+            raise ModuleAccessError(f"Không bật được server: {e}") from e
+        with self._lock:
+            self._server = server
+
+        def _pump(proc):
+            for line in proc.stdout:
+                print("[server] " + line.rstrip(), flush=True)
+        threading.Thread(target=_pump, args=(server,), daemon=True).start()
+        return server
 
     def _wait_health(self, server: subprocess.Popen, timeout: int) -> bool:
         deadline = time.time() + timeout
