@@ -144,23 +144,15 @@ CLIENT_INPUT = """\
 #@markdown Dán key bản quyền của bạn rồi chạy ô này.
 LICENSE_KEY = ""  #@param {type:"string"}
 
-import hashlib, os, subprocess
+import hashlib
 LICENSE_KEY = LICENSE_KEY.strip()
 assert LICENSE_KEY and not LICENSE_KEY.startswith("XXXX"), "Chưa nhập key bản quyền."
 
-# device_id ổn định theo phiên máy Colab: hash của thông tin phần cứng có được.
-def _fingerprint():
-    bits = []
-    for cmd in ("cat /proc/cpuinfo", "nvidia-smi -L", "cat /etc/machine-id"):
-        try:
-            bits.append(subprocess.check_output(cmd, shell=True, text=True,
-                        stderr=subprocess.DEVNULL))
-        except Exception:
-            pass
-    raw = ("|".join(bits) or os.uname().nodename).encode()
-    return "colab-" + hashlib.sha256(raw).hexdigest()[:24]
-
-DEVICE_ID = _fingerprint()
+# device_id GẮN VỚI KEY, không theo phần cứng: mỗi máy Colab là một VM mới nên
+# fingerprint phần cứng đổi mỗi phiên -> mỗi lần chạy ăn một slot thiết bị của
+# license, vài lần là hết. Hash của key thì cố định -> mỗi key luôn là "một
+# thiết bị", không churn slot.
+DEVICE_ID = "colab-" + hashlib.sha256(LICENSE_KEY.encode()).hexdigest()[:24]
 WORKERS = 4  #@param {type:"integer"}
 print("Key nhận rồi. device_id =", DEVICE_ID)
 """
