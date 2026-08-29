@@ -174,6 +174,22 @@ else:
 so_count = len(list(CUDA_DIR.glob("*.so*"))) if CUDA_DIR.exists() else 0
 print(f"\\nC++ runtime: {so_count} file .so trong {CUDA_DIR}")
 assert so_count >= 3, "thiếu .so của C++ runtime — kiểm tra lại bước này"
+
+# Model INT4 nhúng thẳng vào gói: server tìm ở omnivoice.cpp/models (core.py).
+# Gói thành ~700 MB nhưng mọi thứ đi qua một kênh có license, không phụ thuộc
+# HuggingFace lúc khách chạy.
+from huggingface_hub import hf_hub_download
+MODELS = APP / "omnivoice.cpp" / "models"
+MODELS.mkdir(parents=True, exist_ok=True)
+for f in ("omnivoice-base-Q4_K_M.gguf", "omnivoice-tokenizer-Q8_0.gguf"):
+    if (MODELS / f).exists():
+        print("[model có sẵn]", f)
+    else:
+        print("[tải model]", f, flush=True)
+        hf_hub_download("Serveurperso/OmniVoice-GGUF", f, local_dir=str(MODELS))
+ggufs = sorted(p.name for p in MODELS.glob("*.gguf"))
+print("model:", ggufs)
+assert len(ggufs) >= 2, "thiếu file model .gguf"
 """
 
 # ── Cell 4: Cython biên dịch Python -> .so ──────────────────────────
@@ -269,7 +285,7 @@ out = DIST / f"omnivoice-secure-{PYTAG}-linux-x86_64.tar.gz"
 
 # Gói gọn: chỉ .so, điểm vào KEEP_PY, C++ runtime, và metadata. Không kèm .git,
 # không kèm test, không kèm scripts kịch bản.
-INCLUDE = ["remote", "pyomnivoice", "omnivoice.cpp/build/bin"]
+INCLUDE = ["remote", "pyomnivoice", "omnivoice.cpp/build/bin", "omnivoice.cpp/models"]
 manifest = {
     "python_tag": PYTAG,
     "built_from": f"{REPO_URL}@{BRANCH}",
