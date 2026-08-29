@@ -126,13 +126,20 @@ class Pool:
         # lượng dài gấp bội -> chuỗi khổng lồ -> phình VRAM -> crash. Transcript
         # đúng của lời nói ~12-16 ký tự/giây; dưới 4 ký tự/giây gần như chắc chắn
         # là transcript sai/thiếu. Chặn tại đây để không hạ được server.
+        # RỖNG thì AN TOÀN: engine lùi về mốc "Nice to meet you." (25 token), nhịp
+        # đọc hợp lý. NGẮN-NHƯNG-KHÁC-RỖNG mới nguy: ref_weight bé xíu, không lùi
+        # mốc, nên speed_factor tí hon -> mọi câu ước lượng dài gấp bội -> phình
+        # VRAM. Vd ASR yếu ra "So với." (7 ký tự) cho 2,6s = 2,7 ký tự/giây.
+        # Lời nói thực ~12-16 ký tự/giây; dưới 4 gần như chắc là transcript sai.
+        stripped = text.strip()
         audio_sec = max(len(pcm) / SAMPLE_RATE, 0.1)
         min_chars = max(8, int(audio_sec * 4))
-        if len(text.strip()) < min_chars:
+        if stripped and len(stripped) < min_chars:
             raise ValueError(
-                f"transcript qua ngan ({len(text.strip())} ky tu cho {audio_sec:.1f}s "
-                f"audio, can >= {min_chars}). Kiem tra lai transcript giong mau — "
-                "transcript sai lam engine uoc luong do dai loan -> phinh VRAM.")
+                f"transcript qua ngan ({len(stripped)} ky tu cho {audio_sec:.1f}s "
+                f"audio = {len(stripped)/audio_sec:.1f} ky tu/giay, can >= 4). "
+                "Transcript sai/thieu lam engine uoc luong do dai loan -> phinh "
+                "VRAM. De TRONG transcript thi an toan hon (engine lui ve nhip mac dinh).")
         vid = uuid.uuid4().hex[:12]
         tmp = Path(tempfile.gettempdir()) / f"ref-{vid}.wav"
         tmp.parent.mkdir(parents=True, exist_ok=True)
