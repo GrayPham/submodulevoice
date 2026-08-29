@@ -27,7 +27,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "colab" / "OmniVoice_Build_Secure_Colab.ipynb"
+OUT = ROOT / "colab" / "LVC_Voice6_Build_Secure_Colab.ipynb"
 DEFAULT_REPO = "https://github.com/CHUA-DAT-REPO/submodulevoice.git"
 
 
@@ -41,7 +41,7 @@ def code(t: str) -> dict:
 
 
 INTRO = """\
-# OmniVoice — Build bản bảo mật (Cython) trên Colab
+# LVC Voice 6 — Build bản bảo mật (Cython) trên Colab
 
 Notebook này **không chạy** server. Nó **đóng gói** server thành một bản phát
 hành đã giấu mã Python:

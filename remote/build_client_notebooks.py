@@ -3,9 +3,9 @@
     python remote/build_client_notebooks.py --repo https://github.com/GrayPham/submodulevoice.git
 
 Ra:
-  colab/OmniVoice_Build_Loader_Colab.ipynb  — CHỈ BẠN chạy: Cython hoá
+  colab/LVC_Voice6_Build_Loader_Colab.ipynb  — CHỈ BẠN chạy: Cython hoá
       remote/voice_loader.py -> voice_loader.*.so, đóng gói để đưa lên Release.
-  colab/OmniVoice_Client_Colab.ipynb        — GỬI KHÁCH: tải loader .so đã build
+  colab/LVC_Voice6_Client_Colab.ipynb        — GỬI KHÁCH: tải loader .so đã build
       sẵn, getpass license, gọi run() -> server voice bật qua đường hầm.
 
 Vì sao tách: kill-switch chỉ có tác dụng nếu khách nhận BINARY .so. Nếu notebook
@@ -19,8 +19,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_BUILD = ROOT / "colab" / "OmniVoice_Build_Loader_Colab.ipynb"
-OUT_CLIENT = ROOT / "colab" / "OmniVoice_Client_Colab.ipynb"
+OUT_BUILD = ROOT / "colab" / "LVC_Voice6_Build_Loader_Colab.ipynb"
+OUT_CLIENT = ROOT / "colab" / "LVC_Voice6_Client_Colab.ipynb"
 DEFAULT_REPO = "https://github.com/GrayPham/submodulevoice.git"
 # Release chứa loader .so đã build. Notebook khách tải từ đây.
 LOADER_RELEASE_TAG = "loader-linux"
@@ -52,7 +52,7 @@ def nb(cells: list) -> dict:
 
 # ═══════════════════ NOTEBOOK 1: BUILD LOADER ═══════════════════
 BUILD_INTRO = """\
-# OmniVoice — Build loader bảo mật (.so)
+# LVC Voice 6 — Build loader bảo mật (.so)
 
 **Chỉ bạn chạy.** Notebook này Cython hoá `remote/voice_loader.py` thành
 `voice_loader.*.so` (khớp Python + nền tảng của Colab), rồi in checksum. Tải
@@ -128,7 +128,7 @@ print(f"(PYTAG={PYTAG} — phải khớp Python mà notebook khách chạy.)")
 
 # ═══════════════════ NOTEBOOK 2: KHÁCH ═══════════════════
 CLIENT_INTRO = """\
-# 🎙️ OmniVoice — Tạo giọng nói (khách)
+# 🎙️ LVC Voice 6 — Tạo giọng nói (khách)
 
 Chạy server voice của bạn trên GPU miễn phí của Colab. Chỉ cần **key bản quyền**.
 
