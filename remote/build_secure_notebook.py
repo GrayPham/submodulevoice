@@ -181,24 +181,30 @@ CELL_CYTHON = """\
 # ── 4. Cython: biên dịch .py -> .so, rồi XOÁ .py nguồn ────────────────
 # Mỗi module dịch riêng thành .so đặt cạnh .py, sau đó xoá .py. import trong
 # Python tự ưu tiên .so cùng tên nên mã chạy y hệt, chỉ khác là không còn nguồn.
+#
+# QUAN TRỌNG: build_ext --inplace chép .so tới đường dẫn TƯƠNG ĐỐI (vd
+# remote/server...so) theo THƯ MỤC ĐANG ĐỨNG. Colab mặc định đứng ở /content,
+# không phải /content/app, nên chép hụt -> FileNotFoundError. Phải chdir vào
+# gốc app trước, rồi mọi đường dẫn tương đối mới khớp.
 from Cython.Build import cythonize
 from setuptools import Extension
 from setuptools.dist import Distribution
 
+os.chdir(APP)
+print("thư mục build:", os.getcwd())
+
 def build_one(rel):
-    src = APP / rel
-    if not src.exists():
+    if not Path(rel).exists():          # rel tương đối với cwd = APP
         print(f"  bỏ qua (không có): {rel}")
         return None
     # Tên module = đường dẫn có dấu chấm, để __init__.so nằm đúng gói.
     modname = rel[:-3].replace("/", ".")
-    ext = Extension(modname, [str(src)])
+    ext = Extension(modname, [rel])
     dist = Distribution({"ext_modules": cythonize(
         [ext], language_level=3,
         compiler_directives={"emit_code_comments": False},
         quiet=True)})
-    dist.script_args = ["build_ext", "--inplace",
-                        "--build-lib", str(APP), "--build-temp", "/tmp/cybuild"]
+    dist.script_args = ["build_ext", "--inplace", "--build-temp", "/tmp/cybuild"]
     dist.parse_command_line()
     dist.run_commands()
     return modname
