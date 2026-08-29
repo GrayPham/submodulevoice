@@ -191,22 +191,32 @@ class SecureVoiceLoader:
 
         api_key = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
         env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1")
+        # server.py là .so Cython — KHÔNG chạy được bằng `python -m` (runpy cần
+        # code object mà extension module không phơi ra: "No code object
+        # available"). Import trực tiếp rồi gọi main() thì .so chạy bình thường.
+        launch = f"import {SERVER_MODULE} as s; s.main()"
         try:
             server = subprocess.Popen(
-                [sys.executable, "-m", SERVER_MODULE,
+                [sys.executable, "-c", launch,
                  "--workers", str(self.workers), "--port", str(SERVER_PORT),
                  "--key", api_key],
                 cwd=app_dir, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                 start_new_session=(os.name == "posix"),
             )
         except OSError as e:
             raise ModuleAccessError(f"Không bật được server: {e}") from e
         with self._lock:
             self._server = server
+        # Bơm log server ra ngoài để thấy được tiến độ/lỗi (trước đây là hộp đen).
+        def _pump():
+            for line in server.stdout:
+                print("[server] " + line.rstrip(), flush=True)
+        threading.Thread(target=_pump, daemon=True).start()
 
-        if not self._wait_health(server, timeout=180):
+        if not self._wait_health(server, timeout=300):
             self._kill_children()
-            raise ModuleAccessError("Server không lên sau 180s — xem log phía trên.")
+            raise ModuleAccessError("Server không lên sau 300s — xem [server] log phía trên.")
         print(f"[RUN] Server sẵn sàng trên cổng {SERVER_PORT}", flush=True)
 
         public_url = self._open_tunnel()
