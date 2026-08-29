@@ -105,7 +105,8 @@ def run_one(code: str, script: str, lang: str, args, out: dict) -> None:
     out[code] = {
         "wall": time.perf_counter() - t0,
         "rc": p.returncode,
-        "tail": "\n".join(l for l in (p.stdout or "").splitlines() if l.strip())[-700:],
+        "tail": "\n".join(l for l in ((p.stdout or "") + (p.stderr or "")).splitlines()
+                          if l.strip())[-900:],
         "wav": o,
     }
 
