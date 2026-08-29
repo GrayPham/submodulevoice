@@ -153,8 +153,12 @@ assert LICENSE_KEY and not LICENSE_KEY.startswith("XXXX"), "Chưa nhập key b�
 # license, vài lần là hết. Hash của key thì cố định -> mỗi key luôn là "một
 # thiết bị", không churn slot.
 DEVICE_ID = "colab-" + hashlib.sha256(LICENSE_KEY.encode()).hexdigest()[:24]
-WORKERS = 4  #@param {type:"integer"}
-print("Key nhận rồi. device_id =", DEVICE_ID)
+# MẶC ĐỊNH 1 LUỒNG: chạy tuần tự thì pool VRAM chỉ nở đúng một buffer, có trần
+# cố định, KHÔNG cộng dồn qua các job -> không OOM dù nhiều câu dài. Nhiều luồng
+# nhanh hơn nhưng pool nở theo số luồng song song và không co lại -> dễ cạn VRAM
+# rồi crash. Đổi số này lên chỉ khi đã có guard giới hạn VRAM ở server.
+WORKERS = 1  #@param {type:"integer"}
+print("Key nhận rồi. device_id =", DEVICE_ID, "| WORKERS =", WORKERS)
 """
 
 CLIENT_DEPS = """\
