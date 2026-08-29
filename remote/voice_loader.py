@@ -43,9 +43,12 @@ VERIFY_BASE = "https://tool.lvcmedia.vn"
 GO_BASE_FALLBACK = "https://check.lvcmedia.vn"
 
 TOOL_CODE = "lvc-voice"
-# Ưu tiên bản CUDA nếu máy có GPU NVIDIA; không thì bản CPU.
+# Gói cp313 là gói HOÀN CHỈNH và phổ dụng: Cython .so + C++ CUDA runtime
+# (GGML_BACKEND_DL tự dùng GPU khi có, tự lùi CPU khi không) + model INT4. Một
+# gói chạy cả GPU lẫn CPU, nên chỉ cần một biến thể.
+# LƯU Ý: module 'omnivoice-linux-cuda-sm75' trên R2 chỉ là bó .so runtime C++
+# thô (không server.so, không model) — KHÔNG chọn, sẽ hỏng.
 MODULE_VARIANTS = [
-    {"module_name": "omnivoice-linux-cuda-sm75",    "version": "1.0.0", "need_gpu": True},
     {"module_name": "omnivoice-cp313-linux-x86_64", "version": "1.0.0", "need_gpu": False},
 ]
 
@@ -335,10 +338,11 @@ def select_module(modules: list) -> dict:
         m = _pick_module(modules, v["module_name"], v["version"])
         if m and "access_ticket" in m:
             return m
-    for m in modules:
-        if "access_ticket" in m:
-            return m
-    raise LicenseError("License không cấp quyền biến thể module phù hợp.")
+    # KHÔNG lùi về module lạ: các module ngoài MODULE_VARIANTS (vd bó runtime
+    # thô sm75) không phải gói server chạy được, chọn nhầm sẽ hỏng khó hiểu.
+    raise LicenseError(
+        "License không cấp gói server hợp lệ "
+        f"({[v['module_name'] for v in MODULE_VARIANTS]}).")
 
 
 def _find_app_dir(work_dir: str) -> str:
