@@ -144,12 +144,30 @@ if BUILD_CPP:
        cwd=str(src))
     sh("cmake --build build -j$(nproc)", cwd=str(src), tail=1)
 else:
-    # Prebuilt runtime-linux từ Releases của repo. Sửa lại nếu bạn để nơi khác.
+    # Prebuilt runtime-linux từ Releases của repo. Asset đặt tên theo kiến trúc
+    # GPU: ...-sm75 (T4), -sm80/86 (A100/30xx), -sm89 (40xx). Tự dò GPU rồi ghép
+    # đúng hậu tố; nếu asset đúng kiến trúc không có thì lùi về sm75 (phổ biến
+    # nhất trên Colab free).
     base = REPO_URL.replace(".git", "")
-    url  = base + "/releases/download/runtime-linux/omnivoice-linux-cuda.tar.gz"
-    tgz  = "/content/runtime.tgz"
-    print(f"\\n=== Tải C++ runtime prebuilt ===\\n{url}")
-    sh(f"curl -fL -o {tgz} {url}")
+    rel_url = base + "/releases/download/runtime-linux"
+    try:
+        cc = subprocess.check_output(
+            "nvidia-smi --query-gpu=compute_cap --format=csv,noheader",
+            shell=True, text=True).strip().splitlines()[0].replace(".", "")
+    except Exception:
+        cc = "75"
+    tgz = "/content/runtime.tgz"
+    got = False
+    for sm in (cc, "75"):
+        url = f"{rel_url}/omnivoice-linux-cuda-sm{sm}.tar.gz"
+        print(f"\\n=== Tải C++ runtime prebuilt (sm{sm}) ===\\n{url}")
+        rc = subprocess.call(f"curl -fL -o {tgz} {url}", shell=True)
+        if rc == 0:
+            got = True
+            break
+        print(f"  không có asset sm{sm}, thử phương án khác…")
+    assert got, ("không tải được runtime prebuilt. Kiểm tra Releases có asset "
+                 f"omnivoice-linux-cuda-sm{cc}.tar.gz hoặc -sm75, hoặc đặt BUILD_CPP=True")
     (APP / "omnivoice.cpp" / "build" / "bin").mkdir(parents=True, exist_ok=True)
     sh(f"tar xzf {tgz} -C {APP}/omnivoice.cpp/build/bin")
 
