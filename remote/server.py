@@ -90,6 +90,9 @@ class Pool:
         self.audio_sec = 0.0
         self.synth_sec = 0.0
         self.started = time.time()
+        # Giữ để tái tạo engine khi cần giải phóng VRAM (xem _worker).
+        self.profile = profile
+        self.models_dir = models_dir
 
         print(f"[server] nap {n} engine, profile {profile} ...", flush=True)
         t0 = time.perf_counter()
@@ -177,8 +180,22 @@ class Pool:
                 with self.engine_locks[wid]:
                     a = eng.say(job.text, voice=voice, instruct=job.instruct,
                                 lang=job.lang, steps=job.steps, seed=job.seed)
+                    wall = eng.last_wall
+                    # ggml giữ pool VRAM theo chuỗi LỚN NHẤT từng gặp, KHÔNG trả
+                    # lại. Bình thường guard chặn chuỗi dài nên pool có trần. Nếu
+                    # một balloon vẫn lọt (audio > 3 phút — không thể có với text
+                    # <=500 ký tự + transcript đúng), tái tạo engine để giải
+                    # phóng VRAM đã bị pool giữ, tránh cộng dồn tới OOM.
+                    if a.duration > 180:
+                        print(f"[server] worker {wid}: job sinh {a.duration:.0f}s "
+                              f"audio (bất thường) — tái tạo engine để trả VRAM.",
+                              flush=True)
+                        eng.close()
+                        eng = OmniVoice(profile=self.profile, backend="cuda",
+                                        models_dir=self.models_dir)
+                        self.engines[wid] = eng
                 job.audio = a.samples
-                job.wall = eng.last_wall
+                job.wall = wall
                 with self.lock:
                     self.served += 1
                     self.audio_sec += a.duration
