@@ -224,11 +224,13 @@ class SecureVoiceLoader:
         print(f"  Worker  : {self.workers}", flush=True)
         print("=" * 62, flush=True)
 
-        # Watchdog: nếu server chết ngoài ý muốn (vd engine segfault rc=-11) mà
-        # license còn hiệu lực, tự dựng lại trên CÙNG cổng — đường hầm giữ
-        # nguyên nên URL/key không đổi. Backoff tăng dần, chặn vòng lặp sập-dựng.
+        # Watchdog: nếu server chết ngoài ý muốn (crash engine) mà license còn
+        # hiệu lực, tự dựng lại trên CÙNG cổng — đường hầm giữ nguyên nên URL/key
+        # không đổi. KHÔNG bao giờ bỏ cuộc: ô notebook phải chạy liên tục thì
+        # Colab mới không ngắt runtime; nếu watchdog thoát thì ô kết thúc và cả
+        # phiên chết. Nên cứ giữ ô sống, thử lại mãi với backoff có trần.
         restarts = 0
-        last_restart = 0.0
+        started_at = time.monotonic()
         while not self._stop.is_set():
             if server.poll() is None:
                 self._stop.wait(5)
@@ -236,24 +238,23 @@ class SecureVoiceLoader:
             rc = server.returncode
             if self._stop.is_set():
                 break
-            # reset đếm nếu lần trước đã chạy ổn định một lúc
-            now = time.monotonic()
-            if now - last_restart > 120:
+            # Nếu server vừa chạy ổn định >2 phút thì coi lần chết này là sự cố
+            # mới, đặt lại nhịp backoff về nhỏ.
+            if time.monotonic() - started_at > 120:
                 restarts = 0
             restarts += 1
-            last_restart = now
-            if restarts > 5:
-                print(f"[WATCHDOG] Server chết {restarts} lần liên tiếp (rc={rc}) "
-                      f"— dừng, không dựng lại nữa.", flush=True)
-                break
-            backoff = min(5 * restarts, 30)
-            print(f"[WATCHDOG] Server thoát rc={rc}; dựng lại sau {backoff}s "
-                  f"(lần {restarts}/5). URL giữ nguyên.", flush=True)
+            backoff = min(10 * restarts, 60)   # trần 60s, không bỏ cuộc
+            print(f"[WATCHDOG] Server thoát rc={rc} (lần {restarts}); dựng lại "
+                  f"sau {backoff}s. URL/key giữ nguyên.", flush=True)
+            if restarts >= 5:
+                print("[WATCHDOG] Server chết liên tục — vẫn GIỮ Ô CHẠY và thử "
+                      "lại mỗi ~60s để runtime không bị Colab ngắt. Xem [server] "
+                      "log để biết vì sao.", flush=True)
             if self._stop.wait(backoff):
                 break
             server = self._launch_server()
-            if not self._wait_health(server, timeout=300):
-                print("[WATCHDOG] Dựng lại nhưng server không lên — thử lại.", flush=True)
+            self._wait_health(server, timeout=300)
+            started_at = time.monotonic()
         self._cleanup()
 
     def _launch_server(self) -> subprocess.Popen:

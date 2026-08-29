@@ -89,6 +89,12 @@ class Pool:
             OmniVoice(profile=profile, backend="cuda", models_dir=models_dir)
             for _ in range(n)
         ]
+        # Mỗi engine có ggml context/scheduler RIÊNG, KHÔNG an toàn khi hai luồng
+        # dùng cùng lúc. add_voice() chạy engine 0 từ luồng HTTP, còn worker 0
+        # cũng chạy engine 0 từ hàng đợi — nếu /voice chen vào lúc worker 0 đang
+        # tổng hợp thì ggml sập (GGML_ASSERT(buffer) / segfault). Khoá riêng từng
+        # engine để mỗi context chỉ một luồng dùng tại một thời điểm.
+        self.engine_locks = [threading.Lock() for _ in range(n)]
         self.backend = self.engines[0].backend
         print(f"[server] xong sau {time.perf_counter() - t0:.1f}s, backend {self.backend}",
               flush=True)
@@ -111,7 +117,8 @@ class Pool:
         tmp.parent.mkdir(parents=True, exist_ok=True)
         Audio(pcm).save(tmp)
         try:
-            voice = self.engines[0].load_voice(tmp, text)
+            with self.engine_locks[0]:
+                voice = self.engines[0].load_voice(tmp, text)
         finally:
             tmp.unlink(missing_ok=True)
         with self.lock:
@@ -139,8 +146,9 @@ class Pool:
                     if entry is None:
                         raise KeyError(f"voice_id khong ton tai: {job.voice_id}")
                     voice = entry[1]
-                a = eng.say(job.text, voice=voice, instruct=job.instruct,
-                            lang=job.lang, steps=job.steps, seed=job.seed)
+                with self.engine_locks[wid]:
+                    a = eng.say(job.text, voice=voice, instruct=job.instruct,
+                                lang=job.lang, steps=job.steps, seed=job.seed)
                 job.audio = a.samples
                 job.wall = eng.last_wall
                 with self.lock:

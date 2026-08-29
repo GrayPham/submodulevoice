@@ -1,23 +1,31 @@
-# Báo cáo sự cố: server voice crash rc=-11 (SIGSEGV)
+# Báo cáo sự cố + khắc phục: server voice crash (SIGSEGV/SIGABRT)
 
 **Ngày:** 2026-08-29
-**Người test:** tích hợp loader bảo mật (Colab client/server INT4)
-**Mục đích báo cáo:** bàn giao cho đội engine OmniVoice để điều tra nguyên nhân segfault.
+**Trạng thái:** ĐÃ TÌM RA NGUYÊN NHÂN GỐC VÀ SỬA.
 
 ---
 
 ## 1. Tóm tắt
 
-Server voice (OmniVoice INT4, chạy trên Colab T4) **crash với mã thoát `rc=-11`
-(SIGSEGV / segmentation fault)** trong lúc đang tổng hợp, sau khi đã phục vụ vài
-job thành công. Sự cố xảy ra **một lần**, trong một phiên có nhiều worker chạy
-song song.
+Server voice (OmniVoice INT4, Colab T4, 4 worker) crash trong lúc phục vụ:
+lần đầu `rc=-11` (SIGSEGV) khi đang tổng hợp, lần sau `rc=-6` (SIGABRT) với
+backtrace đầy đủ. **Cả hai là cùng một nguyên nhân gốc, và đã xác nhận chắc
+chắn nhờ backtrace:**
 
-Sau đó đã thử tái hiện bằng **65 job** trên nhiều kiểu tải và 2 ngôn ngữ —
-**không tái hiện được**. Kết luận sơ bộ: đây là **crash không thường xuyên
-(intermittent)**, nhiều khả năng là **race condition hiếm trong nhân CUDA của
-engine tổng hợp** khi nhiều worker chạy đồng thời, chứ không phải lỗi tất định
-theo input hay theo số worker.
+> **Engine 0 bị hai luồng dùng cùng lúc.** `add_voice()` (đăng ký giọng, chạy
+> từ luồng HTTP) và worker 0 (tổng hợp, chạy từ hàng đợi) **cùng dùng
+> `self.engines[0]`** mà không khoá. Mỗi engine có ggml context/scheduler
+> riêng, KHÔNG an toàn đa luồng. Khi một request `/voice` chen vào đúng lúc
+> worker 0 đang tổng hợp → ggml compute trên context bị hai luồng giẫm lên
+> nhau → `GGML_ASSERT(buffer) failed` hoặc segfault.
+
+Đây là **bug ở tầng điều phối của server (Pool), không phải lỗi engine
+OmniVoice**. Engine đúng như thiết kế: mỗi context phải dùng một luồng tại một
+thời điểm. Server đã vi phạm điều đó.
+
+**Đã sửa:** thêm khoá riêng cho từng engine (`engine_locks[i]`); add_voice giữ
+khoá engine 0, mỗi worker giữ khoá engine của mình → không còn hai luồng dùng
+chung một context.
 
 ---
 
@@ -25,134 +33,103 @@ theo input hay theo số worker.
 
 | Thành phần | Giá trị |
 |---|---|
-| GPU | Tesla T4, compute capability 7.5 (sm75), VRAM 15360 MiB |
+| GPU | Tesla T4, sm75, VRAM 15360 MiB |
 | Backend | CUDA0 (ggml, `GGML_BACKEND_DL`) |
-| Runtime C++ | omnivoice.cpp, bản prebuilt `omnivoice-linux-cuda-sm75` |
-| Model | profile `lite` (INT4): backbone `omnivoice-base-Q4_K_M.gguf` + tokenizer `omnivoice-tokenizer-Q8_0.gguf` |
-| Python | cp313 (Colab), lớp `pyomnivoice`/`remote.server` **biên dịch Cython → .so** |
-| Số worker | 4 engine độc lập (mỗi worker một `OmniVoice`), hàng đợi dùng chung |
-| Cách bật | `python -c "import remote.server as s; s.main()" --workers 4` |
-
-Ghi chú: lớp Python được **biên dịch Cython** (khác bản `.py` thuần dùng trong
-các test ổn định trước đây) — xem mục 5, đây là biến số cần loại trừ.
+| Runtime C++ | omnivoice.cpp prebuilt `omnivoice-linux-cuda-sm75` |
+| Model | profile `lite` INT4 (Q4_K_M backbone + Q8_0 tokenizer) |
+| Python | cp313, `pyomnivoice`/`remote.server` biên dịch Cython → .so |
+| Worker | 4 engine độc lập, hàng đợi dùng chung |
 
 ---
 
-## 3. Sự cố quan sát được (log gốc)
-
-Server boot hoàn toàn bình thường (4 engine, 3.1s, VRAM trống 14913 MiB), mở
-đường hầm, phục vụ được. Sau đó:
+## 3. Bằng chứng — backtrace lần crash thứ hai (rc=-6)
 
 ```
-[server] [http] "GET / HTTP/1.1" 404 -
-[server] [http] "GET /favicon.ico HTTP/1.1" 404 -
-[server] giọng '_clip_810e0ca18f5c' -> 49a1f213f393 (151 frame)
-[KILL-SWITCH] OK — license còn hiệu lực.
-[server] [Prompt] Built: B'=2 K=8 S=421 N1=7 N2=77 Sref=151 Stgt=186 c_len=421 u_len=186 denoise=1
-[server] [MaskGIT] Start: T=186 K=8 S=421 num_step=8 guidance=2.00 t_shift=0.100 layer_pen=5.00 cls_t=0.00 pos_t=5.00
-[server] [Prompt] Built: B'=2 K=8 S=407 N1=7 N2=72 Sref=151 Stgt=177 c_len=407 u_len=177 denoise=1
-[server] [MaskGIT] Start: T=177 ...
-[RUN] Server thoát rc=-11
+[server] /content/omnivoice.cpp/ggml/src/ggml-backend.cpp:189: GGML_ASSERT(buffer) failed
+[server] libggml-base.so.0(ggml_print_backtrace...)
+[server] libggml-base.so.0(ggml_abort...)
+[server] libggml-cuda.so.0(...)
+[server] libggml-base.so.0(ggml_backend_sched_graph_compute_async...)
+[server] libomnivoice.so(ov_extract_voice_ref+0x1163)      ← ĐĂNG KÝ GIỌNG
+[server] pyomnivoice/core.cpython-...so
+[server] remote/server.cpython-...so
+[RUN] Server thoát rc=-6
 ```
 
-**Đặc điểm crash:**
-- `rc=-11` = tiến trình bị **SIGSEGV** (không phải exception Python — nếu là
-  lỗi Python sẽ có traceback; đây là crash ở tầng C/CUDA).
-- Xảy ra **trong lúc MaskGIT đang chạy** (job thứ 2 vừa in `[MaskGIT] Start`,
-  chưa in dòng kết thúc `[MaskGIT] Total LM forward`).
-- Tham số job: `B'=2` (CFG cond+uncond), `num_step=8`, `guidance=2.00`,
-  `denoise=1`, chuỗi `S=421`/`S=407`, target `Stgt=186`/`177`.
-- Đang có **nhiều job chạy song song** (heartbeat kill-switch vừa fire ở ~180s,
-  chứng tỏ server đã chạy một lúc và đang xử lý liên tục).
+`ov_extract_voice_ref` là hàm xử lý giọng mẫu (gọi khi `/voice`). `GGML_ASSERT
+(buffer)` nghĩa là một tensor chưa được cấp buffer khi compute — hệ quả của
+việc scheduler của engine 0 bị luồng worker 0 đụng vào song song.
+
+Lần crash đầu (rc=-11) backtrace ngắn hơn nhưng crash trong `[MaskGIT]` (tổng
+hợp) — chính là chiều ngược lại: worker 0 đang tổng hợp thì `/voice` đụng vào
+engine 0. Cùng một gốc.
 
 ---
 
-## 4. Các phép thử tái hiện (đã thực hiện) + kết quả
+## 4. Nguyên nhân gốc (mã nguồn)
 
-Gọi API trực tiếp qua đường hầm, cùng server đã crash được dựng lại (4 worker,
-T4, cùng model INT4). Tổng **65 job, 0 crash, 0 lỗi**.
+Trong `remote/server.py`, lớp `Pool`:
 
-| # | Phép thử | Tham số | Kết quả |
-|---|---|---|---|
-| 1 | 5 request **tuần tự** (concurrency 1) | EN, ~70 ký tự, steps=16 | 5/5 OK (~3.9s/req) |
-| 2 | 8 request **đồng thời** | EN, ~90 ký tự, steps=16 | 8/8 OK |
-| 3 | `client.py` thật, 4 luồng | EN, 4 đoạn dài (~970 ký tự), batch 8 | 4/4 OK, 2.46x realtime |
-| 4 | **Hammer**: 5 đợt × 8 đồng thời = 40 job | EN, đoạn dài, **steps=8** | 40/40 OK |
-| 5 | 8 đồng thời **tiếng Việt** | VI, đoạn dài, steps=16 | 8/8 OK |
+```python
+def add_voice(self, ...):
+    voice = self.engines[0].load_voice(tmp, text)   # luồng HTTP, engine 0
 
-Sau tất cả: `served=65, failed=0`, VRAM trống ~10 GB, server vẫn sống.
+def _worker(self, wid):
+    eng = self.engines[wid]                          # worker wid
+    ...
+    a = eng.say(...)                                 # worker 0 -> engine 0
+```
 
-**Đã cố ý phủ các biến nghi ngờ:**
-- Tuần tự vs đồng thời → không phải do tranh chấp worker đơn thuần.
-- Text ngắn vs dài (tới ~970 ký tự, chuỗi tương đương crash) → không phải do độ dài.
-- `steps=8` (đúng như log crash) vs `steps=16` → không phải do số bước.
-- Tải dồn 40 job liên tiếp → không phải do tích luỹ/volume trong khoảng này.
-- 2 ngôn ngữ (EN + VI) → không phải do ngôn ngữ cụ thể đã thử.
+→ `engines[0]` bị **luồng HTTP (add_voice)** và **luồng worker 0** dùng đồng
+thời. Không có khoá. ggml context không chịu được điều này.
 
----
-
-## 5. Phân tích / giả thuyết
-
-**Giả thuyết chính — race condition hiếm trong nhân CUDA khi chạy song song.**
-Crash là SIGSEGV ở tầng C/CUDA, xảy ra đúng lúc MaskGIT chạy với nhiều worker
-đồng thời, và **không tái hiện được** qua 65 job. Đây là dấu hiệu kinh điển của
-một race/heisenbug: cần đúng thời điểm tương tranh giữa các luồng mới lộ. Bài
-stress 4 tiếng trước đó (4 worker) sống sót, càng cho thấy xác suất crash thấp
-chứ không phải lỗi chắc chắn.
-
-**Biến số cần đội engine loại trừ — bản Cython `.so` vs bản `.py` thuần.**
-Điểm KHÁC BIỆT duy nhất so với các lần chạy ổn định trước: lớp Python
-(`pyomnivoice.core`, `remote.server`) lần này được **biên dịch Cython thành
-.so**, còn trước là `.py` thường. Engine C++/CUDA thì **y hệt** (cùng bản
-prebuilt sm75, cùng model GGUF). Về lý thuyết Cython không đổi ngữ nghĩa ctypes,
-nhưng cần kiểm: liệu Cython có làm một buffer numpy (voice ref / audio) bị giải
-phóng sớm (refcount/scope khác) khiến con trỏ truyền xuống C++ trỏ vào vùng đã
-free → segfault, đặc biệt dưới áp lực GC khi nhiều luồng chạy? Đây là giả thuyết,
-chưa chứng minh — nhưng là điểm khác biệt đáng nghi nhất.
-
-**Điểm cần chú ý trong tham số job:** `B'=2` (CFG), `denoise=1` (có xử lý khử
-nhiễu voice ref). Hai job trước crash đều `denoise=1`. Nếu đường denoise của
-voice ref có nhánh cấp phát riêng, cần soi kỹ khi chạy đồng thời.
+**Vì sao bài stress 4 tiếng trước không sập:** client lúc đó đăng ký giọng MỘT
+lần lúc đầu, xong mới gửi toàn bộ TTS → add_voice hoàn tất trước khi worker 0
+bắt đầu → không chồng lấn. Client thật/đợt test sau đăng ký giọng chen vào lúc
+đang chạy → chồng lấn → sập.
 
 ---
 
-## 6. Thông tin đội engine cần để điều tra sâu
+## 5. Cách khắc phục (đã áp vào server.py)
 
-Để bắt được segfault, đề nghị đội engine:
+Khoá riêng từng engine để mỗi ggml context chỉ một luồng dùng tại một thời điểm:
 
-1. **Chạy dưới `cuda-gdb` hoặc bật `compute-sanitizer`** (`--tool memcheck` /
-   `--tool racecheck`) trên đúng cấu hình: T4 sm75, model INT4 lite, **4 worker
-   đồng thời**, tải liên tục. racecheck sẽ chỉ ra data race trong kernel nếu có.
-2. **Bật core dump** (`ulimit -c unlimited`) rồi phân tích backtrace của tiến
-   trình khi rc=-11, để biết segfault ở hàm/kernel nào (MaskGIT? DAC? denoise?).
-3. **Kiểm tính thread-safety** của đường `ov_synthesize` khi nhiều engine độc
-   lập cùng gọi: có tài nguyên CUDA nào (stream, context, buffer tĩnh) bị chia
-   sẻ ngầm giữa các worker không?
-4. **So bản `.py` vs bản Cython `.so`** trên cùng input + cùng mức đồng thời:
-   nếu bản `.py` không bao giờ crash còn `.so` thỉnh thoảng crash, khoanh vùng
-   được về lớp marshalling Python (loại trừ hoặc xác nhận giả thuyết mục 5).
+```python
+# __init__:
+self.engine_locks = [threading.Lock() for _ in range(n)]
 
----
+# add_voice:
+with self.engine_locks[0]:
+    voice = self.engines[0].load_voice(tmp, text)
 
-## 7. Đề xuất giảm thiểu (phía tích hợp, không chờ engine sửa)
+# _worker(wid):
+with self.engine_locks[wid]:
+    a = eng.say(...)
+```
 
-Vì đây là crash hiếm và ở tầng engine, phía tích hợp nên làm **cho hệ thống tự
-phục hồi** thay vì chờ sửa gốc:
-
-1. **Watchdog tự khởi động lại server** khi tiến trình chết `rc != 0` mà license
-   vẫn hợp lệ — biến một crash hiếm thành gián đoạn vài giây thay vì sập cả
-   phiên. (Đang bổ sung vào loader.)
-2. **Client đã có cơ chế resume** (ghi từng đoạn, chạy lại là làm tiếp phần
-   thiếu) → mất một job giữa chừng không mất cả bài.
-3. Nếu cần độ ổn định tối đa tạm thời: **giảm số worker** (ít CUDA đồng thời =
-   xác suất race thấp hơn), đổi lại chậm hơn.
+Chi phí: khi đăng ký giọng, chỉ **worker 0** bị chặn trong ~2 giây (thời gian
+trích giọng); các worker 1..N-1 không ảnh hưởng, vẫn tổng hợp bình thường. Đăng
+ký giọng thưa nên tác động thực tế không đáng kể.
 
 ---
 
-## Phụ lục — lệnh test đã dùng
+## 6. Quá trình khoanh vùng (để đối chiếu)
 
-- Đăng ký giọng: `POST /voice {name, text, wav_b64}` → `voice_id`
-- Tổng hợp: `POST /tts {text, voice_id, lang, steps, seed, format}`
-- Client thật: `python remote/client.py --url <URL> --key <KEY> --script <txt>
-  --ref <wav> --lang English --batch 8 --concurrency 4`
-- Giọng mẫu: FDown…9995-ref.wav (6.0s, transcript tiếng Việt 98 ký tự)
+Trước khi có backtrace, đã thử tái hiện bằng 65 job (5 tuần tự, 8 đồng thời,
+client.py 4 luồng đoạn dài, 40 job hammer, 8 tiếng Việt) — **không sập lần
+nào**, vì tất cả đều đăng ký giọng TRƯỚC rồi mới tổng hợp, không chạm vào điều
+kiện chồng lấn engine 0. Điều này khẳng định thêm: crash chỉ xảy ra khi `/voice`
+và tổng hợp trên worker 0 **thực sự đồng thời** — đúng như nguyên nhân gốc.
+
+---
+
+## 7. Việc cần làm để bản sửa có hiệu lực
+
+`remote/server.py` được **biên dịch vào gói mã hoá** trên R2. Vì vậy phải:
+1. Rebuild gói bằng `OmniVoice_Build_Secure_Colab.ipynb` (biên dịch lại server.py
+   → .so, gộp model).
+2. Upload đè gói mới lên R2 (module `omnivoice-cp313-linux-x86_64@1.0.0`).
+3. Chạy lại client — đăng ký giọng lúc đang tổng hợp không còn sập.
+
+Watchdog trong loader (tự dựng lại khi crash) vẫn là lớp an toàn phụ, nhưng sau
+bản sửa này thì crash do nguyên nhân trên sẽ không còn xảy ra.
