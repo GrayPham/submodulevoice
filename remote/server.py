@@ -120,6 +120,19 @@ class Pool:
         Mã RVQ chỉ phụ thuộc codec nên mọi worker dùng chung được. Voice là
         mảng numpy chỉ đọc, chia sẻ giữa các luồng an toàn.
         """
+        # Guard chống transcript sai làm nổ ước lượng độ dài. Engine tính số
+        # token đích = target_weight * ref_tokens / ref_weight. Nếu transcript
+        # (ref_weight) quá ngắn so với audio (ref_tokens) thì mọi câu bị ước
+        # lượng dài gấp bội -> chuỗi khổng lồ -> phình VRAM -> crash. Transcript
+        # đúng của lời nói ~12-16 ký tự/giây; dưới 4 ký tự/giây gần như chắc chắn
+        # là transcript sai/thiếu. Chặn tại đây để không hạ được server.
+        audio_sec = max(len(pcm) / SAMPLE_RATE, 0.1)
+        min_chars = max(8, int(audio_sec * 4))
+        if len(text.strip()) < min_chars:
+            raise ValueError(
+                f"transcript qua ngan ({len(text.strip())} ky tu cho {audio_sec:.1f}s "
+                f"audio, can >= {min_chars}). Kiem tra lai transcript giong mau — "
+                "transcript sai lam engine uoc luong do dai loan -> phinh VRAM.")
         vid = uuid.uuid4().hex[:12]
         tmp = Path(tempfile.gettempdir()) / f"ref-{vid}.wav"
         tmp.parent.mkdir(parents=True, exist_ok=True)
