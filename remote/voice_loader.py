@@ -178,9 +178,11 @@ class SecureVoiceLoader:
 
     # ---------- PHẦN 2b: CHẠY SERVER (gói omnivoice) ----------
     def run_server(self, module_bytes: bytes) -> None:
-        """Giải nén gói -> bật `python -m remote.server` -> mở đường hầm -> giữ sống."""
-        ram_root = "/dev/shm" if os.path.isdir("/dev/shm") else None
-        work_dir = tempfile.mkdtemp(prefix="voice_mod_", dir=ram_root)
+        """Giải nén gói -> bật server (import trực tiếp) -> mở đường hầm -> giữ sống."""
+        # KHÔNG dùng /dev/shm: trên nhiều môi trường (Colab) nó mount noexec nên
+        # không nạp được .so ("failed to map segment from shared object"). Dùng
+        # ổ thường; _cleanup vẫn xoá hẳn khi thu hồi/kết thúc.
+        work_dir = tempfile.mkdtemp(prefix="voice_mod_")
         with self._lock:
             self._work_dir = work_dir
 
@@ -190,7 +192,11 @@ class SecureVoiceLoader:
         print(f"[RUN] Giải nén -> {app_dir}: {os.listdir(app_dir)[:12]}", flush=True)
 
         api_key = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
-        env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1")
+        # libomnivoice.so cần libggml*.so cùng thư mục; Linux không có
+        # add_dll_directory nên phải chỉ LD_LIBRARY_PATH tới bin cho linker thấy.
+        bin_dir = os.path.join(app_dir, "omnivoice.cpp", "build", "bin")
+        env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1",
+                   LD_LIBRARY_PATH=bin_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""))
         # server.py là .so Cython — KHÔNG chạy được bằng `python -m` (runpy cần
         # code object mà extension module không phơi ra: "No code object
         # available"). Import trực tiếp rồi gọi main() thì .so chạy bình thường.
