@@ -278,8 +278,27 @@ manifest = {
 }
 (APP / "BUILD_MANIFEST.json").write_text(__import__("json").dumps(manifest, indent=2))
 
+# Dọn sạch mọi .py không thuộc KEEP_PY khỏi các thư mục sắp đóng gói. Đây là
+# chốt chặn thật: module logic đã thành .so ở ô 4, nhưng thư mục vẫn còn các
+# script phụ (bộ sinh notebook, tiện ích...) ở dạng .py. Xoá hẳn trước khi nén
+# thì dù sau này thêm script nào cũng không lọt. KEEP_PY là điểm vào duy nhất
+# được phép giữ nguyên nguồn.
+keep = {str((APP / k).resolve()) for k in KEEP_PY}
+purged = []
+for top in INCLUDE:
+    d = APP / top
+    if not d.exists():
+        continue
+    for py in d.rglob("*.py"):
+        if str(py.resolve()) not in keep:
+            py.unlink()
+            purged.append(str(py.relative_to(APP)))
+if purged:
+    print("Dọn .py thừa khỏi gói:")
+    for p in purged:
+        print("  ", p)
+
 inc = " ".join(f"app/{p}" for p in INCLUDE) + " app/BUILD_MANIFEST.json"
-# Loại mọi .py còn sót trong remote/ (trừ KEEP_PY) và mọi __pycache__.
 excl = "--exclude='__pycache__' --exclude='*.pyc' --exclude='*.c'"
 sh(f"cd /content && tar czf {out} {excl} {inc}")
 
