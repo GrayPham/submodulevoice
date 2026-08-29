@@ -133,10 +133,52 @@ CLIENT_INTRO = """\
 Chạy server voice của bạn trên GPU miễn phí của Colab. Chỉ cần **key bản quyền**.
 
 **Cách dùng:** điền key vào ô 1 → menu **Runtime → Run all** → đợi ô 3 in ra
-**API URL** và **API key**. Dùng cặp đó gọi tạo giọng từ máy bạn.
+**API URL** và **API key**. Dùng cặp đó gọi tạo giọng từ máy bạn (xem ô cuối).
+
+> **Bản chất lượng cao:** server mặc định **32 bước · engine TỰ chia đoạn**
+> (liền mạch, không cắt vụn), nhận tới **8000 ký tự/request**. Cứ gửi cả đoạn —
+> để engine tự chia cho giọng mượt. VRAM có trần nhờ guard nên gửi bài dài không
+> nổ. Muốn nhanh hơn (giọng gần như không đổi) thì gửi `steps: 16`.
 
 > Để **ô 3 chạy suốt** trong lúc dùng — tắt ô là tắt server. Mất mạng thì chạy
 > lại ô 3, lấy URL mới.
+"""
+
+CLIENT_USAGE = """\
+## Gọi tạo giọng từ máy bạn (chất lượng cao)
+
+Sau khi ô 3 in ra **API URL** + **API key**, chạy đoạn dưới **trên máy bạn**
+(không phải trong Colab — ô 3 đang giữ server). Mặc định **32 bước, engine tự
+chia đoạn** nên chỉ cần gửi cả đoạn, KHÔNG tự cắt 250/500 nữa:
+
+```python
+import requests, base64, io, soundfile as sf
+
+URL = "https://....trycloudflare.com"   # dán từ ô 3
+KEY = "..."                              # dán từ ô 3
+H = {"X-API-Key": KEY}
+
+# 1) Đăng ký giọng mẫu: ref audio + transcript ĐÚNG của ref (rất quan trọng —
+#    transcript sai/ngắn làm ước lượng độ dài loạn; để TRỐNG "" thì an toàn).
+audio, sr = sf.read("ref.wav")
+buf = io.BytesIO(); sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
+vid = requests.post(f"{URL}/voice", json={
+    "name": "toi",
+    "text": "transcript ĐÚNG của file ref.wav",
+    "wav_b64": base64.b64encode(buf.getvalue()).decode(),
+}, timeout=180, headers=H).json()["voice_id"]
+
+# 2) Tạo giọng: gửi CẢ đoạn (tới 8000 ký tự), server tự chia -> giọng mượt.
+r = requests.post(f"{URL}/tts", json={
+    "text": "Câu một... Câu hai... (đoạn dài tuỳ ý, để engine tự chia).",
+    "voice_id": vid, "lang": "Vietnamese", "steps": 32,
+}, timeout=900, headers=H)
+open("out.wav", "wb").write(r.content)
+print("Xong -> out.wav  |  synth", r.headers.get("X-Synth-Seconds"), "s")
+```
+
+**Bài dài nhiều đoạn?** Dùng `/tts_batch` với `items=[{"i":0,"text":...}, ...]`
+để gộp một request (đỡ trễ mạng). Mỗi item vẫn nên là cả đoạn, không cắt vụn.
 """
 
 CLIENT_INPUT = """\
@@ -212,7 +254,7 @@ def build_client_nb(repo: str, branch: str) -> dict:
         return (t.replace("%%REPO%%", repo).replace("%%BRANCH%%", branch)
                 .replace("%%TAG%%", LOADER_RELEASE_TAG).replace("%%ASSET%%", LOADER_ASSET))
     return nb([md(s(CLIENT_INTRO)), code(s(CLIENT_INPUT)),
-               code(s(CLIENT_DEPS)), code(s(CLIENT_RUN))])
+               code(s(CLIENT_DEPS)), code(s(CLIENT_RUN)), md(s(CLIENT_USAGE))])
 
 
 def main() -> None:
