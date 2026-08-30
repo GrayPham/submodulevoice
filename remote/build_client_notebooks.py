@@ -158,13 +158,22 @@ URL = "https://....trycloudflare.com"   # dán từ ô 3
 KEY = "..."                              # dán từ ô 3
 H = {"X-API-Key": KEY}
 
-# 1) Đăng ký giọng mẫu: ref audio + transcript ĐÚNG của ref (rất quan trọng —
-#    transcript sai/ngắn làm ước lượng độ dài loạn; để TRỐNG "" thì an toàn).
+# 1) Đăng ký giọng mẫu: ref audio + transcript ĐÚNG của ref.
+#    QUAN TRỌNG: transcript PHẢI khớp đúng lời trong ref.wav. Để TRỐNG "" tuy
+#    KHÔNG nổ VRAM nhưng CHẤT LƯỢNG KÉM: model canh sai -> RÒ nguyên văn lời
+#    trong ref vào bài đọc + LẶP/chèn chữ ở đầu đoạn. Không có transcript thì
+#    tự phiên âm bằng faster-whisper (khớp tiếng, sạch):
+#        # pip install faster-whisper
+#        from faster_whisper import WhisperModel
+#        segs, _ = WhisperModel("small", device="cuda", compute_type="float16"
+#                     ).transcribe("ref.wav", language="vi", beam_size=5)
+#        ref_text = " ".join(s.text.strip() for s in segs).strip()
+ref_text = "transcript ĐÚNG của file ref.wav"   # hoặc ref_text từ whisper ở trên
 audio, sr = sf.read("ref.wav")
 buf = io.BytesIO(); sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
 vid = requests.post(f"{URL}/voice", json={
     "name": "toi",
-    "text": "transcript ĐÚNG của file ref.wav",
+    "text": ref_text,
     "wav_b64": base64.b64encode(buf.getvalue()).decode(),
 }, timeout=180, headers=H).json()["voice_id"]
 
