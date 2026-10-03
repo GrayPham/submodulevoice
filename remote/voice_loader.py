@@ -16,6 +16,7 @@ encrypted_payload → AESGCM.decrypt(nonce, cả_file). KHÔNG cắt [12:].
 from __future__ import annotations
 
 import base64
+import glob
 import hashlib
 import io
 import json
@@ -199,13 +200,20 @@ class SecureVoiceLoader:
         # cần libcudart.so.12/libcublas… của CUDA runtime. Linux không có
         # add_dll_directory nên gom hết vào LD_LIBRARY_PATH cho linker thấy:
         #   - bin của gói (libggml*)
-        #   - các thư mục CUDA runtime phổ biến (nếu có)
+        #   - các thư mục CUDA runtime phổ biến (nếu có, kể cả gói pip nvidia)
         bin_dir = os.path.join(app_dir, "omnivoice.cpp", "build", "bin")
-        ld_dirs = [bin_dir] + [d for d in (
-            "/usr/local/cuda/lib64",
-            "/usr/local/cuda/targets/x86_64-linux/lib",
-            "/usr/lib/x86_64-linux-gnu",
-        ) if os.path.isdir(d)]
+        cuda_globs = (
+            glob.glob("/usr/local/cuda*/lib64") +
+            glob.glob("/usr/local/cuda*/targets/x86_64-linux/lib") +
+            glob.glob(f"{sys.prefix}/lib/python*/site-packages/nvidia/*/lib") +
+            glob.glob(f"{os.path.expanduser('~')}/.local/lib/python*/site-packages/nvidia/*/lib") +
+            [
+                "/usr/local/cuda/lib64",
+                "/usr/local/cuda/targets/x86_64-linux/lib",
+                "/usr/lib/x86_64-linux-gnu",
+            ]
+        )
+        ld_dirs = [bin_dir] + [d for d in dict.fromkeys(cuda_globs) if os.path.isdir(d)]
         self._app_dir = app_dir
         self._env = dict(os.environ, PYTHONPATH=app_dir, PYTHONUNBUFFERED="1",
                          LD_LIBRARY_PATH=os.pathsep.join(

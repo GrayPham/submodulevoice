@@ -214,10 +214,24 @@ print("Key nhận rồi. device_id =", DEVICE_ID, "| WORKERS =", WORKERS)
 
 CLIENT_DEPS = """\
 # ── 2. Cài thư viện + tải loader bảo mật ──────────────────────────────
-import hashlib, urllib.request, importlib.util, sys, subprocess
+import hashlib, urllib.request, importlib.util, sys, subprocess, os, glob
 
+# Cài thư viện mạng + crypto + runtime CUDA 12 cho backend GPU
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "httpx", "cryptography"], check=True)
+                "httpx", "cryptography",
+                "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"], check=True)
+
+# Nạp tất cả đường dẫn CUDA (cả hệ thống lẫn gói wheel nvidia) vào LD_LIBRARY_PATH
+cuda_dirs = (
+    glob.glob("/usr/local/cuda*/lib64") +
+    glob.glob("/usr/local/cuda*/targets/x86_64-linux/lib") +
+    glob.glob(f"{sys.prefix}/lib/python*/site-packages/nvidia/*/lib") +
+    glob.glob(f"{os.path.expanduser('~')}/.local/lib/python*/site-packages/nvidia/*/lib") +
+    ["/usr/lib/x86_64-linux-gnu"]
+)
+valid_dirs = [d for d in dict.fromkeys(cuda_dirs) if os.path.isdir(d)]
+if valid_dirs:
+    os.environ["LD_LIBRARY_PATH"] = ":".join(valid_dirs + [os.environ.get("LD_LIBRARY_PATH", "")])
 
 BASE = "%%REPO%%".replace(".git", "")
 SO_URL  = f"{BASE}/releases/download/%%TAG%%/%%ASSET%%"
@@ -276,7 +290,7 @@ def main() -> None:
                       (OUT_CLIENT, build_client_nb(args.repo, args.branch))):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"Đã ghi {path}  ({len(doc['cells'])} ô)")
+        print(f"Da ghi {path}  ({len(doc['cells'])} o)")
 
 
 if __name__ == "__main__":
