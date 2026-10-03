@@ -221,14 +221,36 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                 "httpx", "cryptography",
                 "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"], check=True)
 
-# Nạp tất cả đường dẫn CUDA (cả hệ thống lẫn gói wheel nvidia) vào LD_LIBRARY_PATH
-cuda_dirs = (
-    glob.glob("/usr/local/cuda*/lib64") +
-    glob.glob("/usr/local/cuda*/targets/x86_64-linux/lib") +
-    glob.glob(f"{sys.prefix}/lib/python*/site-packages/nvidia/*/lib") +
-    glob.glob(f"{os.path.expanduser('~')}/.local/lib/python*/site-packages/nvidia/*/lib") +
-    ["/usr/lib/x86_64-linux-gnu"]
-)
+# Lấy đường dẫn thư viện CUDA từ các module wheel vừa cài và hệ thống
+cuda_dirs = []
+for mod in ("nvidia.cuda_runtime", "nvidia.cublas"):
+    try:
+        m = __import__(mod, fromlist=["__path__"])
+        p = os.path.join(m.__path__[0], "lib")
+        if os.path.isdir(p):
+            cuda_dirs.append(p)
+    except Exception:
+        pass
+
+cuda_dirs += glob.glob("/usr/local/cuda*/lib64")
+cuda_dirs += glob.glob("/usr/local/cuda*/targets/x86_64-linux/lib")
+
+# Tạo symlink thẳng vào /usr/lib/x86_64-linux-gnu để ldconfig nhận diện toàn hệ thống
+for d in cuda_dirs:
+    for f in glob.glob(os.path.join(d, "*.so*")):
+        name = os.path.basename(f)
+        target = os.path.join("/usr/lib/x86_64-linux-gnu", name)
+        if not os.path.exists(target):
+            try:
+                os.symlink(f, target)
+            except Exception:
+                pass
+
+try:
+    subprocess.run(["ldconfig"], check=False)
+except Exception:
+    pass
+
 valid_dirs = [d for d in dict.fromkeys(cuda_dirs) if os.path.isdir(d)]
 if valid_dirs:
     os.environ["LD_LIBRARY_PATH"] = ":".join(valid_dirs + [os.environ.get("LD_LIBRARY_PATH", "")])
