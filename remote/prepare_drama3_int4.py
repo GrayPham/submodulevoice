@@ -38,6 +38,10 @@ LINUX_CUDART_URL = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_TAG}/"
     f"audio-{AUDIOCPP_TAG}-cudart-ubuntu-x64-cuda12.8.tar.gz"
 )
+LINUX_CPU_BIN_URL = (
+    f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_TAG}/"
+    f"audio-{AUDIOCPP_TAG}-bin-ubuntu-x64-cpu.tar.gz"
+)
 WIN_BIN_URL = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_TAG}/"
     f"audio-{AUDIOCPP_TAG}-bin-windows-x64-cuda12.4.zip"
@@ -149,20 +153,18 @@ def collect_lib_dirs(engine_dir: Path) -> list[str]:
     return dirs
 
 
-def ensure_audio_cpp_engine(engine_dir: Path) -> dict[str, Path]:
-    """Đảm bảo đủ audiocpp_cli, audiocpp_gguf, audiocpp_server và fish_drama3.json."""
+def ensure_audio_cpp_engine(engine_dir: Path, need_gguf: bool = True) -> dict[str, Path]:
+    """Đảm bảo đủ audiocpp_server (CUDA Colab) và audiocpp_gguf (để nén INT4)."""
     engine_dir = Path(engine_dir).resolve()
     engine_dir.mkdir(parents=True, exist_ok=True)
 
-    cli_name = _exe_name("audiocpp_cli")
     gguf_name = _exe_name("audiocpp_gguf")
     srv_name = _exe_name("audiocpp_server")
 
-    cli_bin = _find_first(engine_dir, cli_name)
-    gguf_bin = _find_first(engine_dir, gguf_name)
     srv_bin = _find_first(engine_dir, srv_name)
+    gguf_bin = _find_first(engine_dir, gguf_name)
 
-    if not (cli_bin and gguf_bin and srv_bin):
+    if not srv_bin:
         if sys.platform.startswith("linux"):
             bin_pkg = engine_dir / "_audiocpp_bin.tar.gz"
             cudart_pkg = engine_dir / "_audiocpp_cudart.tar.gz"
@@ -186,30 +188,38 @@ def ensure_audio_cpp_engine(engine_dir: Path) -> dict[str, Path]:
         else:
             raise SystemExit(f"Chưa hỗ trợ tự tải engine cho nền tảng {sys.platform}.")
 
-        cli_bin = _find_first(engine_dir, cli_name)
-        gguf_bin = _find_first(engine_dir, gguf_name)
         srv_bin = _find_first(engine_dir, srv_name)
+        gguf_bin = _find_first(engine_dir, gguf_name)
 
-    if not (cli_bin and gguf_bin and srv_bin):
+    # Gói -colab.tar.gz của audio.cpp chỉ đóng gói audiocpp_server (không kèm audiocpp_gguf).
+    # Tải thêm gói CPU vào thư mục con gguf_tool/ để lấy audiocpp_gguf nén INT4.
+    if need_gguf and not gguf_bin and sys.platform.startswith("linux"):
+        gguf_dir = engine_dir / "gguf_tool"
+        cpu_pkg = gguf_dir / "_audiocpp_cpu.tar.gz"
+        _download_file(LINUX_CPU_BIN_URL, cpu_pkg, "audio.cpp CPU tools (audiocpp_gguf)")
+        _extract_archive(cpu_pkg, gguf_dir)
+        cpu_pkg.unlink(missing_ok=True)
+        gguf_bin = _find_first(gguf_dir, gguf_name)
+
+    if not srv_bin or (need_gguf and not gguf_bin):
         raise FileNotFoundError(
-            f"Không tìm thấy đủ audiocpp_cli / audiocpp_gguf / audiocpp_server trong {engine_dir}"
+            f"Không tìm thấy đủ audiocpp_server / audiocpp_gguf trong {engine_dir}"
         )
 
     if not os.name == "nt":
-        for p in (cli_bin, gguf_bin, srv_bin):
-            os.chmod(p, os.stat(p).st_mode | 0o111)
+        for p in (srv_bin, gguf_bin):
+            if p is not None and p.exists():
+                os.chmod(p, os.stat(p).st_mode | 0o111)
 
     spec_path = _find_first(engine_dir, "fish_drama3.json")
     if not spec_path:
         spec_path = engine_dir / "model_specs" / "fish_drama3.json"
         _download_file(FISH_SPEC_RAW_URL, spec_path, "fish_drama3.json spec")
 
-    return {
-        "cli": cli_bin,
-        "gguf": gguf_bin,
-        "server": srv_bin,
-        "spec": spec_path,
-    }
+    out = {"server": srv_bin, "spec": spec_path}
+    if gguf_bin is not None:
+        out["gguf"] = gguf_bin
+    return out
 
 
 def _resolve_remote_size(url: str, headers: dict[str, str]) -> int:
@@ -492,7 +502,7 @@ def compress_to_int4(
     ]
 
     env = dict(os.environ)
-    lib_dirs = collect_lib_dirs(engine_dir)
+    lib_dirs = collect_lib_dirs(gguf_bin.parent)
     if sys.platform.startswith("linux") and lib_dirs:
         env["LD_LIBRARY_PATH"] = os.pathsep.join(
             lib_dirs + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else [])
@@ -553,8 +563,8 @@ def main() -> None:
 
     engine_dir = Path(args.engine_dir).resolve()
     models_dir = Path(args.models_dir).resolve()
-    bins = ensure_audio_cpp_engine(engine_dir)
-    print(f"[engine] server={bins['server']} | gguf={bins['gguf']}", flush=True)
+    bins = ensure_audio_cpp_engine(engine_dir, need_gguf=True)
+    print(f"[engine] server={bins['server']} | gguf={bins.get('gguf')}", flush=True)
 
     if args.engine_only:
         return
