@@ -67,29 +67,38 @@ except Exception:
     _sf = None
 
 
-def decode(b: bytes, name: str) -> np.ndarray:
-    """Giai ma audio server tra ve. WAV dung thu vien chuan, con lai can
+def decode_sr(b: bytes, name: str) -> tuple[np.ndarray, int]:
+    """Giai ma audio server tra ve kem sample rate. WAV dung thu vien chuan, con lai can
     soundfile: pip install soundfile"""
     if name.endswith(".wav"):
-        return read_wav(b)
+        return read_wav_sr(b)
     if _sf is None:
         raise SystemExit("can soundfile de giai ma flac/opus: pip install soundfile")
-    x, _sr = _sf.read(io.BytesIO(b), dtype="float32", always_2d=False)
-    return np.ascontiguousarray(x, dtype=np.float32)
+    x, sr = _sf.read(io.BytesIO(b), dtype="float32", always_2d=False)
+    return np.ascontiguousarray(x, dtype=np.float32), int(sr)
+
+
+def decode(b: bytes, name: str) -> np.ndarray:
+    return decode_sr(b, name)[0]
+
+
+def read_wav_sr(b: bytes) -> tuple[np.ndarray, int]:
+    with wave.open(io.BytesIO(b), "rb") as w:
+        sr = w.getframerate()
+        raw = w.readframes(w.getnframes())
+    return np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0, int(sr)
 
 
 def read_wav(b: bytes) -> np.ndarray:
-    with wave.open(io.BytesIO(b), "rb") as w:
-        raw = w.readframes(w.getnframes())
-    return np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0
+    return read_wav_sr(b)[0]
 
 
-def save_wav(path: Path, pcm: np.ndarray) -> None:
+def save_wav(path: Path, pcm: np.ndarray, sr: int = SAMPLE_RATE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
+        w.setframerate(int(sr))
         w.writeframes((np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes())
 
 
@@ -200,6 +209,8 @@ def main() -> None:
     }, ensure_ascii=False).encode()).hexdigest()[:16]
     manifest = parts_dir / "manifest.json"
 
+    sr_box = [int(health.get("sample_rate") or SAMPLE_RATE)]
+
     results: dict[int, np.ndarray] = {}
     if args.no_resume and parts_dir.exists():
         for f in parts_dir.glob("*"):
@@ -213,7 +224,9 @@ def main() -> None:
             for f in sorted(parts_dir.glob("part-*.wav")):
                 idx = int(f.stem.split("-")[1]) - 1
                 if 0 <= idx < len(paras):
-                    results[idx] = read_wav(f.read_bytes())
+                    pcm_p, part_sr = read_wav_sr(f.read_bytes())
+                    results[idx] = pcm_p
+                    sr_box[0] = part_sr
             if results:
                 print(f"tiếp tục : đã có {len(results)}/{len(paras)} đoạn từ lần chạy trước")
         else:
@@ -234,11 +247,12 @@ def main() -> None:
         print(f"           server khong ho tro '{fmt}', chuyen ve wav")
         fmt = "wav"
 
-    def record(idx: int, pcm: np.ndarray, synth: float, queued: float) -> None:
-        save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm)
+    def record(idx: int, pcm: np.ndarray, sr: int, synth: float, queued: float) -> None:
+        save_wav(parts_dir / f"part-{idx + 1:06d}.wav", pcm, sr=sr)
         with lock:
+            sr_box[0] = sr
             results[idx] = pcm
-            meta[idx] = (synth, queued, len(pcm) / SAMPLE_RATE)
+            meta[idx] = (synth, queued, len(pcm) / sr)
             done_n[0] += 1
             el = time.perf_counter() - t0
             left = el / done_n[0] * (len(todo) - done_n[0])
@@ -263,8 +277,8 @@ def main() -> None:
                             with lock:
                                 print(f"\n  đoạn {it['i'] + 1} lỗi: {it['error']}")
                             continue
-                        record(it["i"], decode(z.read(it["file"]), it["file"]),
-                               it.get("synth", 0.0), 0.0)
+                        pcm_i, sr_i = decode_sr(z.read(it["file"]), it["file"])
+                        record(it["i"], pcm_i, sr_i, it.get("synth", 0.0), 0.0)
                 return
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
                 last = e
@@ -280,7 +294,8 @@ def main() -> None:
         for attempt in range(args.retries + 1):
             try:
                 b, hdr = http(args.url, args.key, "/tts", payload)
-                record(idx, read_wav(b), float(hdr.get("x-synth-seconds", 0)),
+                pcm_i, sr_i = read_wav_sr(b)
+                record(idx, pcm_i, sr_i, float(hdr.get("x-synth-seconds", 0)),
                        float(hdr.get("x-queue-seconds", 0)))
                 return
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
@@ -306,7 +321,8 @@ def main() -> None:
         print("Không ghép file để bạn không nhận nhầm bản thiếu. Chạy lại.")
         raise SystemExit(1)
 
-    gap = np.zeros(int(args.pause * SAMPLE_RATE), dtype=np.float32)
+    out_sr = sr_box[0]
+    gap = np.zeros(int(args.pause * out_sr), dtype=np.float32)
     pieces: list[np.ndarray] = []
     w = len(str(len(paras)))
     for i in range(len(paras)):
@@ -314,11 +330,11 @@ def main() -> None:
             pieces.append(gap)
         pieces.append(results[i])
         if args.keep_parts:
-            save_wav(out.with_name(f"{out.stem}-{i + 1:0{w}d}.wav"), results[i])
+            save_wav(out.with_name(f"{out.stem}-{i + 1:0{w}d}.wav"), results[i], sr=out_sr)
     final = np.concatenate(pieces)
-    save_wav(out, final)
+    save_wav(out, final, sr=out_sr)
 
-    audio = len(final) / SAMPLE_RATE
+    audio = len(final) / out_sr
     synth = sum(m[0] for m in meta.values())
     queued = sum(m[1] for m in meta.values())
     print(f"\ntổng     : {audio:.1f}s audio trong {wall:.1f}s = {audio / wall:.2f}x realtime")
