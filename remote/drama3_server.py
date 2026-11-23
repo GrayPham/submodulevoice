@@ -202,6 +202,7 @@ def select_vram_options(
     gpu_free_mib: int,
     ram_total_mib: int,
     ram_avail_mib: int,
+    is_slim: bool = True,
 ) -> tuple[str, dict]:
     """Chọn cấu hình session_options phù hợp nhất với VRAM GPU & RAM hệ thống."""
     chosen = (mode or "auto").lower()
@@ -242,10 +243,11 @@ def select_vram_options(
             "perf_mode": "cuda_perf",
         }
     elif chosen == "t4":
-        # T4 15 GB VRAM + ~12.7 GB RAM: 24 tầng expert trên GPU (~6 GB) + dense (~2.8 GB) = ~8.8 GB VRAM,
-        # còn 16 tầng trên CPU (~4 GB) -> lọt gọn cả VRAM lẫn RAM không OOM.
+        # T4 15 GB VRAM + ~12.7 GB RAM:
+        #   - Bản INT4 slim: 24 tầng expert trên GPU (~6 GB) + dense (~2.8 GB) = ~8.8 GB VRAM.
+        #   - Bản gốc 8-bit/Q2_K: 16 tầng expert trên GPU (~4 GB) + dense (~5.4 GB) = ~9.4 GB VRAM.
         opts = {
-            "cpu_expert_layers": 16,
+            "cpu_expert_layers": 16 if is_slim else 24,
             "disk_experts": False,
             "codec_backend": "cpu",
             "codec_async_decode": True,
@@ -1045,8 +1047,13 @@ def main() -> None:
     print(f"[server] GPU: {info}", flush=True)
     print(f"[server] Host RAM: avail {ram_avail} MiB / total {ram_total} MiB", flush=True)
 
+    is_slim = "slim" in model_path.name.lower() or "int4" in model_path.name.lower()
     chosen_mode, sess_opts = select_vram_options(
-        args.vram_mode, gpu_free_mib=gpu_free, ram_total_mib=ram_total, ram_avail_mib=ram_avail
+        args.vram_mode,
+        gpu_free_mib=gpu_free,
+        ram_total_mib=ram_total,
+        ram_avail_mib=ram_avail,
+        is_slim=is_slim,
     )
     print(f"[server] Drama-3 profile='{chosen_mode}', model='{model_path.name}'", flush=True)
 

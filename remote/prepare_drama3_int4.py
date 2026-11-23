@@ -192,7 +192,7 @@ def ensure_audio_cpp_engine(engine_dir: Path, need_gguf: bool = True) -> dict[st
         gguf_bin = _find_first(engine_dir, gguf_name)
 
     # Gói -colab.tar.gz của audio.cpp chỉ đóng gói audiocpp_server (không kèm audiocpp_gguf).
-    # Tải thêm gói CPU vào thư mục con gguf_tool/ để lấy audiocpp_gguf nén INT4.
+    # Tải thêm gói CPU vào thư mục con gguf_tool/ để thử chạy audiocpp_gguf nén INT4.
     if need_gguf and not gguf_bin and sys.platform.startswith("linux"):
         gguf_dir = engine_dir / "gguf_tool"
         cpu_pkg = gguf_dir / "_audiocpp_cpu.tar.gz"
@@ -201,9 +201,9 @@ def ensure_audio_cpp_engine(engine_dir: Path, need_gguf: bool = True) -> dict[st
         cpu_pkg.unlink(missing_ok=True)
         gguf_bin = _find_first(gguf_dir, gguf_name)
 
-    if not srv_bin or (need_gguf and not gguf_bin):
+    if not srv_bin:
         raise FileNotFoundError(
-            f"Không tìm thấy đủ audiocpp_server / audiocpp_gguf trong {engine_dir}"
+            f"Không tìm thấy audiocpp_server trong {engine_dir}"
         )
 
     if not os.name == "nt":
@@ -585,18 +585,38 @@ def main() -> None:
         hf_token=args.hf_token,
         workers=args.workers,
     )
+    gguf_bin = bins.get("gguf")
+    if gguf_bin is None:
+        print(
+            "[canh-bao] Không có audiocpp_gguf -> dùng trực tiếp bản gốc "
+            f"{orig_path.name} (15.88 GiB) cho audiocpp_server.",
+            flush=True,
+        )
+        return
+
     sidecar_root = models_dir / "_sidecar_root"
     if not (sidecar_root / "config.json").exists():
         extract_embedded_sidecars(orig_path, sidecar_root)
 
-    compress_to_int4(
-        gguf_bin=bins["gguf"],
-        input_gguf=orig_path,
-        output_gguf=int4_path,
-        spec_path=bins["spec"],
-        sidecar_root=sidecar_root,
-        engine_dir=engine_dir,
-    )
+    try:
+        compress_to_int4(
+            gguf_bin=gguf_bin,
+            input_gguf=orig_path,
+            output_gguf=int4_path,
+            spec_path=bins["spec"],
+            sidecar_root=sidecar_root,
+            engine_dir=engine_dir,
+        )
+    except RuntimeError as exc:
+        if "GLIBC_" in str(exc) or "not found" in str(exc):
+            print(
+                f"[canh-bao] audiocpp_gguf không chạy được trên GLIBC của Colab ({exc}).\n"
+                f"[ok] Giữ nguyên bản gốc {orig_path.name} (15.88 GiB) để chạy trực tiếp "
+                "trên audiocpp_server!",
+                flush=True,
+            )
+            return
+        raise
 
     if args.remove_orig and orig_path.exists():
         orig_path.unlink()
