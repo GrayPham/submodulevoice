@@ -244,11 +244,11 @@ def select_vram_options(
         }
     elif chosen == "t4":
         # T4 15 GB VRAM + ~12.7 GB RAM:
-        #   - Bản INT4 slim: 24 tầng expert trên GPU (~6 GB) + dense (~2.8 GB) = ~8.8 GB VRAM.
-        #   - Bản gốc 8-bit/Q2_K: 16 tầng expert trên GPU (~4 GB) + dense (~5.4 GB) = ~9.4 GB VRAM.
+        # Đặt 34-36 tầng expert ra CPU/disk để VRAM chỉ quanh ~6-8 GB (dư ~7 GB
+        # chống OOM khi sinh câu dài), đồng thời giữ System RAM dưới ~8 GB.
         opts = {
-            "cpu_expert_layers": 16 if is_slim else 24,
-            "disk_experts": False,
+            "cpu_expert_layers": 30 if is_slim else 36,
+            "disk_experts": bool(low_host_ram) if not is_slim else False,
             "codec_backend": "cpu",
             "codec_async_decode": True,
             "codec_batch_frames": 8,
