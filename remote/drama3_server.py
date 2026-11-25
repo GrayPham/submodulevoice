@@ -246,11 +246,13 @@ def select_vram_options(
         # T4 15 GB VRAM + ~12.7 GB RAM:
         # Đặt 34-36 tầng expert ra CPU/disk để VRAM chỉ quanh ~6-8 GB (dư ~7 GB
         # chống OOM khi sinh câu dài), đồng thời giữ System RAM dưới ~8 GB.
-        # RAM còn thừa (>= ~9 GB trống) -> đẩy 40 tầng ra CPU giữ VRAM thấp nhất;
-        # RAM chật -> 36 tầng + đọc expert từ disk để khỏi OOM phía RAM.
+        # Tầng expert đẩy ra CPU được GIỮ TRONG RAM máy (model 15.88 GiB, 40 tầng
+        # ~ 13-14 GiB), nên không thể đẩy hết trên Colab 12.7 GB RAM. Docs audio.cpp
+        # khuyến nghị 24 tầng cho GPU 16 GB (~8 GiB RAM, VRAM ~8-9 GB).
+        # RAM chật -> đọc expert từ disk để khỏi bị OOM killer.
         ram_ample = ram_avail_mib >= 9_000
         opts = {
-            "cpu_expert_layers": 40 if ram_ample else 36,
+            "cpu_expert_layers": 24 if ram_ample else 28,
             "disk_experts": not ram_ample and bool(low_host_ram),
             "codec_backend": "cpu",
             "codec_async_decode": True,

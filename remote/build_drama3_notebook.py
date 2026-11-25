@@ -167,7 +167,21 @@ with open(LOG, "wb") as f:
         start_new_session=True,
     )
 
-for _ in range(240):
+def _mem():
+    try:
+        mi = {}
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            mi[k] = int(v.split()[0]) // 1024
+        ram = f"{mi['MemTotal'] - mi['MemAvailable']}/{mi['MemTotal']}"
+    except Exception:
+        ram = "?"
+    gpu = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                          "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
+    return f"RAM {ram} MiB | VRAM {gpu}"
+
+log_pos = 0
+for i in range(240):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=3) as r:
             h = json.load(r)
@@ -176,6 +190,18 @@ for _ in range(240):
         print(f"API key: {API_KEY}")
         break
     except Exception:
+        # In tiếp log của server để thấy nó đang làm gì (không còn "im lặng" khi nạp model).
+        try:
+            with open(LOG, "rb") as lf:
+                lf.seek(log_pos)
+                chunk = lf.read()
+                log_pos = lf.tell()
+            if chunk:
+                print(chunk.decode("utf-8", "replace"), end="", flush=True)
+        except Exception:
+            pass
+        if i % 10 == 0:
+            print(f"[{i * 2}s] đang nạp... {_mem()}", flush=True)
         time.sleep(2)
 else:
     print(open(LOG, encoding="utf-8", errors="replace").read()[-4000:])
