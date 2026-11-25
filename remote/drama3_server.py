@@ -246,9 +246,12 @@ def select_vram_options(
         # T4 15 GB VRAM + ~12.7 GB RAM:
         # Đặt 34-36 tầng expert ra CPU/disk để VRAM chỉ quanh ~6-8 GB (dư ~7 GB
         # chống OOM khi sinh câu dài), đồng thời giữ System RAM dưới ~8 GB.
+        # RAM còn thừa (>= ~9 GB trống) -> đẩy 40 tầng ra CPU giữ VRAM thấp nhất;
+        # RAM chật -> 36 tầng + đọc expert từ disk để khỏi OOM phía RAM.
+        ram_ample = ram_avail_mib >= 9_000
         opts = {
-            "cpu_expert_layers": 30 if is_slim else 36,
-            "disk_experts": bool(low_host_ram) if not is_slim else False,
+            "cpu_expert_layers": 40 if ram_ample else 36,
+            "disk_experts": not ram_ample and bool(low_host_ram),
             "codec_backend": "cpu",
             "codec_async_decode": True,
             "codec_batch_frames": 8,
@@ -595,6 +598,13 @@ class Drama3Engine:
             else:
                 raise
         print(f"[drama3] Nạp model xong sau {time.monotonic() - t0:.1f}s (mode={self.load_mode}).", flush=True)
+        _gi = gpu_info()
+        if "vram_total_mib" in _gi:
+            print(
+                f"[drama3] VRAM sau nạp: dùng {_gi['vram_total_mib'] - _gi['vram_free_mib']} / "
+                f"{_gi['vram_total_mib']} MiB | opts={self.session_options}",
+                flush=True,
+            )
 
     def ensure_alive(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
@@ -658,6 +668,14 @@ class Drama3Engine:
             t0 = time.monotonic()
             res = self._run_task({"text": tagged, "options": req_opts}, timeout=timeout)
             wall = time.monotonic() - t0
+
+        _gi = gpu_info()
+        if "vram_total_mib" in _gi:
+            print(
+                f"[drama3] VRAM sau render: dùng {_gi['vram_total_mib'] - _gi['vram_free_mib']} / "
+                f"{_gi['vram_total_mib']} MiB",
+                flush=True,
+            )
 
         audio_b64 = res.get("audio")
         if not audio_b64:
