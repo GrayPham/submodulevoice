@@ -310,6 +310,23 @@ def canonical_session_options(opts: dict) -> dict:
     return out
 
 
+_VOICE_AUDIO_KEYS = (
+    "wav_b64", "audio_b64", "wav_base64", "audio_base64", "ref_audio_b64",
+    "reference_audio_b64", "file_b64", "audio", "wav", "data",
+)
+
+
+def pick_voice_audio(d: dict) -> str | None:
+    """Lấy chuỗi base64 của wav mẫu từ body /voice; chịu được vài tên trường và data-URI."""
+    for k in _VOICE_AUDIO_KEYS:
+        v = d.get(k)
+        if isinstance(v, str) and v:
+            if v.startswith("data:") and "," in v:
+                v = v.split(",", 1)[1]
+            return v
+    return None
+
+
 def strip_structural_tokens(text: str) -> str:
     if not text:
         return ""
@@ -1066,8 +1083,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._parsed = d  # route đồng bộ đọc lại qua _body()
             if route == "/voice":
                 d = self._body()
-                pcm = read_wav_bytes_44k(base64.b64decode(d["wav_b64"]))
-                vid = POOL.add_voice(d.get("name", "voice"), pcm, d.get("text", ""))
+                b64 = pick_voice_audio(d) if isinstance(d, dict) else None
+                if b64 is None:
+                    # Báo rõ app đã gửi những trường nào thay vì KeyError -> 500 khó hiểu.
+                    got = sorted(d.keys()) if isinstance(d, dict) else type(d).__name__
+                    print(f"[voice] thiếu wav_b64; app gửi các trường: {got}", flush=True)
+                    self._json(
+                        400,
+                        {"error": "thieu 'wav_b64' (wav base64)", "received_keys": got},
+                    )
+                    return
+                pcm = read_wav_bytes_44k(base64.b64decode(b64))
+                ref_text = (
+                    d.get("text") or d.get("ref_text") or d.get("reference_text")
+                    or d.get("transcript") or ""
+                )
+                vid = POOL.add_voice(d.get("name", "voice"), pcm, ref_text)
                 self._json(
                     200,
                     {"voice_id": vid, "seconds": round(len(pcm) / DRAMA3_SAMPLE_RATE, 2)},
