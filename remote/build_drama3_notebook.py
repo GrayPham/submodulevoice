@@ -39,20 +39,31 @@ def code(t: str) -> dict:
 
 
 INTRO = """\
-# Fish Audio Drama-3 (INT4) — Server GPU trên Colab
+# Fish Audio Drama-3 — Server GPU trên Colab
 
-Server tổng hợp giọng nói **Fish Audio Drama 3 (256 Experts, 44.1 kHz)** bản
-lượng tử hoá **INT4 chuẩn (`drama-3-slim-int4-q2k.gguf`, 13.27 GiB)** trên Colab.
+Tổng hợp giọng nói **Fish Audio Drama 3 (44.1 kHz)** trên GPU Colab, máy ở nhà
+gọi lên qua API (`/health`, `/voice`, `/tts`, `/tts_batch`).
 
-- Tự tải bản gốc `drama-3-backbone-8bit-experts-Q2_K.gguf` (15.88 GiB) từ
-  HuggingFace `Jmica/Drama-3-GGUF`, giải nén sidecar và đóng gói thành
-  `drama-3-slim-int4-q2k.gguf` (13.27 GiB, `< 2.8 GB VRAM` ở chế độ `2.8gb`,
-  hoặc tự cân đối cho T4 ở chế độ `auto`) ngay trên mạng Colab, rồi xoá bản gốc
-  để tiết kiệm ổ đĩa.
-- Giao thức HTTP giống `remote/server.py` (`/health`, `/voices`, `/voice`,
-  `/tts`, `/tts_batch`), xuất audio **44.100 Hz**.
+## Chạy lần lượt từ trên xuống
 
-## Chạy lần lượt từ ô 1 → ô 7
+| ô | việc | lần đầu | lần sau |
+|---|---|---|---|
+| 1 | kiểm tra GPU | vài giây | vài giây |
+| 2 | clone repo + tải engine | ~1 phút | vài giây |
+| 3 | tải model (~15.9 GiB) | 5–15 phút | vài giây nếu còn phiên |
+| 4 | bật server | ~1–2 phút | ~1–2 phút |
+| 5 | mở đường hầm, lấy URL + key | ~20 giây | ~20 giây |
+| 7 | giữ phiên sống, tự dựng lại khi hỏng | chạy liên tục | chạy liên tục |
+
+Xong ô 5 thì chép URL + API key về máy mình.
+
+## Chỉ có 2 thứ cần chỉnh (ô 4)
+
+- `VRAM_MODE`: để **`auto`**. Nếu bị hết VRAM thì chọn `2.8gb` (chậm hơn nhưng dùng ít VRAM nhất).
+- `THREADS`: để **`0`** = tự lấy theo số nhân CPU của Colab (thường là 2).
+
+Model chạy thẳng bản gốc `drama-3-backbone-8bit-experts-Q2_K.gguf`. Bước nén INT4 đã
+bỏ vì công cụ nén cần GLIBC mới hơn Colab nên không chạy được.
 """
 
 CELL_ENV = """\
@@ -99,63 +110,34 @@ else:
     sh(f"git clone --depth 1 -b {BRANCH} {REPO_URL} {APP}")
 
 sh("pip install -q httpx numpy soundfile soxr")
-sh(f"python remote/prepare_drama3_int4.py --engine-dir {ENG_DIR} --models-dir {MOD_DIR} --engine-only",
+sh(f"python remote/prepare_drama3_int4.py --engine-dir {ENG_DIR} --models-dir {MOD_DIR} --engine-only --no-compress",
    cwd=str(APP))
 """
 
 CELL_MODEL = """\
-#@title 3. Tải & Đóng gói Drama-3 INT4 (drama-3-slim-int4-q2k.gguf) { display-mode: "form" }
-#@markdown Bật `USE_DRIVE_CACHE` nếu muốn lưu bản INT4 (13.27 GiB) lên Google Drive cho lần sau.
-USE_DRIVE_CACHE = False  #@param {type:"boolean"}
-DRIVE_MODEL_DIR = "/content/drive/MyDrive/drama3-models"  #@param {type:"string"}
-HF_TOKEN = ""  #@param {type:"string"}
-REMOVE_ORIG_AFTER_PACK = True  #@param {type:"boolean"}
-
-import os, shutil
+# ── 3. Tải model Drama-3 (~15.9 GiB, có sẵn thì bỏ qua) ─────────────────────
 from pathlib import Path
 
-INT4_NAME = "drama-3-slim-int4-q2k.gguf"
 MOD_DIR.mkdir(parents=True, exist_ok=True)
-int4_local = MOD_DIR / INT4_NAME
-
-if USE_DRIVE_CACHE:
-    from google.colab import drive
-    drive.mount("/content/drive")
-    drive_dir = Path(DRIVE_MODEL_DIR)
-    drive_dir.mkdir(parents=True, exist_ok=True)
-    drive_file = drive_dir / INT4_NAME
-    if not int4_local.exists() and drive_file.exists() and drive_file.stat().st_size > 12 * 1024**3:
-        print(f"[Drive] Đang chép {INT4_NAME} từ Drive về /content...", flush=True)
-        shutil.copy2(drive_file, int4_local)
-
-if not (int4_local.exists() and int4_local.stat().st_size > 12 * 1024**3):
-    cmd = (
-        f"python remote/prepare_drama3_int4.py "
-        f"--engine-dir {ENG_DIR} --models-dir {MOD_DIR} --workers 8"
-    )
-    if REMOVE_ORIG_AFTER_PACK:
-        cmd += " --remove-orig"
-    if HF_TOKEN.strip():
-        os.environ["HF_TOKEN"] = HF_TOKEN.strip()
-    sh(cmd, cwd=str(APP))
-
-    if USE_DRIVE_CACHE and int4_local.exists():
-        drive_file = Path(DRIVE_MODEL_DIR) / INT4_NAME
-        if not drive_file.exists():
-            print(f"[Drive] Đang sao lưu {INT4_NAME} lên Google Drive...", flush=True)
-            shutil.copy2(int4_local, drive_file)
+have = [g for g in MOD_DIR.rglob("*.gguf") if g.stat().st_size > 12 * 1024**3]
+if have:
+    print(f"[có sẵn] {have[0].name} ({have[0].stat().st_size / (1024**3):.2f} GiB)")
 else:
-    print(f"[ok] Đã có sẵn {int4_local} ({int4_local.stat().st_size / (1024**3):.2f} GiB)")
+    sh(f"python remote/prepare_drama3_int4.py --engine-dir {ENG_DIR} "
+       f"--models-dir {MOD_DIR} --workers 8 --no-compress", cwd=str(APP))
 """
 
 CELL_START = """\
 #@title 4. Bật Server Fish Drama-3 { display-mode: "form" }
-#@markdown `auto`: tự chọn tối ưu theo GPU (T4 dùng ~8.8 GB VRAM; card < 8 GB dùng < 2.8 GB VRAM).
+#@markdown `auto` là đủ. Hết VRAM thì chọn `2.8gb`. `THREADS` = 0 nghĩa là tự theo số nhân CPU.
 VRAM_MODE = "auto"  #@param ["auto", "2.8gb", "t4", "2.3gb", "3.3gb", "gpu"]
 PORT = 8770  #@param {type:"integer"}
-THREADS = 6  #@param {type:"integer"}
+THREADS = 0  #@param {type:"integer"}
 
 import json, os, secrets, subprocess, time, urllib.request
+
+THREADS = THREADS or os.cpu_count() or 2
+print(f"VRAM_MODE={VRAM_MODE} | THREADS={THREADS}")
 
 LOG = "/content/drama3_server.log"
 KEY_FILE = "/content/drama3_api_key.txt"

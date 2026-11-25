@@ -559,11 +559,16 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--engine-only", action="store_true", help="Chỉ tải & kiểm tra audio.cpp engine")
     ap.add_argument("--remove-orig", action="store_true", help="Xoá file gốc 15.88 GiB sau khi nén INT4 xong")
+    ap.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="Chỉ tải bản gốc, KHÔNG nén INT4 (audiocpp_gguf cần GLIBC mới, Colab không chạy được)",
+    )
     args = ap.parse_args()
 
     engine_dir = Path(args.engine_dir).resolve()
     models_dir = Path(args.models_dir).resolve()
-    bins = ensure_audio_cpp_engine(engine_dir, need_gguf=True)
+    bins = ensure_audio_cpp_engine(engine_dir, need_gguf=not args.no_compress)
     print(f"[engine] server={bins['server']} | gguf={bins.get('gguf')}", flush=True)
 
     if args.engine_only:
@@ -585,6 +590,9 @@ def main() -> None:
         hf_token=args.hf_token,
         workers=args.workers,
     )
+    if args.no_compress:
+        print(f"[ok] Đã có {orig_path.name} (bỏ qua nén INT4).", flush=True)
+        return
     gguf_bin = bins.get("gguf")
     if gguf_bin is None:
         print(
