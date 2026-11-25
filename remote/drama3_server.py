@@ -290,6 +290,24 @@ def select_vram_options(
     return chosen, opts
 
 
+_MOE_KEYS = {
+    "cpu_expert_layers": "moe_cpu_expert_layers",
+    "disk_experts": "moe_disk_experts",
+    "expert_cache_size": "moe_expert_cache_size",
+}
+
+
+def canonical_session_options(opts: dict) -> dict:
+    """Đổi sang tên khoá chuẩn của audio.cpp v0.9.6 (docs/models/fish_drama3.md):
+    điều khiển MoE dùng `moe_*`, tuỳ chọn riêng của Drama-3 dùng tiền tố `fish_drama3.`.
+    Thêm chunk cho reference-encoder để giảm VRAM cấp phát khi encode giọng mẫu."""
+    out: dict = {}
+    for k, v in opts.items():
+        out[_MOE_KEYS.get(k) or f"fish_drama3.{k}"] = v
+    out.setdefault("fish_drama3.codec_encoder_chunk_samples", 65536)
+    return out
+
+
 def strip_structural_tokens(text: str) -> str:
     if not text:
         return ""
@@ -560,7 +578,11 @@ class Drama3Engine:
             assert p.stdout is not None
             for line in p.stdout:
                 s = line.rstrip()
-                if s and ("error" in s.lower() or "load" in s.lower() or "listening" in s.lower()):
+                sl = s.lower()
+                if s and any(
+                    w in sl
+                    for w in ("error", "load", "listening", "alloc", "vram", "mib", "expert", "option", "warn", "fail")
+                ):
                     print(f"[audiocpp] {s}", flush=True)
 
         threading.Thread(target=_pump, args=(self.proc,), daemon=True).start()
@@ -585,18 +607,37 @@ class Drama3Engine:
             "task": "clon",
             "mode": self.load_mode,
             "path": str(self.model_path),
-            "session_options": self.session_options,
+            "session_options": canonical_session_options(self.session_options),
         }
-        try:
-            self._http_json("/v1/models/load", load_body, timeout=600.0)
-        except Exception as exc:
-            if self.load_mode == "streaming":
-                print(f"[drama3] Cảnh báo load streaming ({exc}) -> thử mode=offline", flush=True)
-                self.load_mode = "offline"
-                load_body["mode"] = "offline"
+        legacy_opts = dict(self.session_options)
+        attempts = [
+            (load_body["mode"], load_body["session_options"]),
+            (load_body["mode"], legacy_opts),
+        ]
+        if self.load_mode == "streaming":
+            attempts.append(("offline", legacy_opts))
+        last_exc: Exception | None = None
+        for i, (mode, sopts) in enumerate(attempts):
+            load_body["mode"] = mode
+            load_body["session_options"] = sopts
+            try:
+                if i:
+                    print(f"[drama3] Thử nạp lại (mode={mode}, opts={sopts})", flush=True)
                 self._http_json("/v1/models/load", load_body, timeout=600.0)
-            else:
-                raise
+                self.load_mode = mode
+                self.applied_options = sopts
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                print(f"[drama3] Nạp lỗi ({exc}) với opts={sopts}", flush=True)
+        if last_exc is not None:
+            raise last_exc
+        try:
+            ms = self._http_json("/v1/models?include_session_options=true", None, timeout=10.0)
+            print(f"[drama3] Engine báo session_options đang áp dụng: {json.dumps(ms)[:1200]}", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
         print(f"[drama3] Nạp model xong sau {time.monotonic() - t0:.1f}s (mode={self.load_mode}).", flush=True)
         _gi = gpu_info()
         if "vram_total_mib" in _gi:
