@@ -888,6 +888,88 @@ class Drama3Pool:
 POOL: Drama3Pool | None = None
 API_KEY = ""
 
+# ── Việc chạy nền (async) ────────────────────────────────────────────────────
+#
+# VÌ SAO CÓ: đường hầm Cloudflare cắt mọi request không kịp trả lời trong ~100 giây
+# (HTTP 524 / 502 kèm trang HTML). Drama-3 INT4 trên T4 đọc chậm (~10 giây máy cho 1 giây
+# tiếng), một đoạn 25 giây tiếng mất gần 5 phút → request bị cắt, server vẫn đọc xong rồi
+# ghi kết quả vào socket đã chết: tốn cả GPU mà không ai nhận được gì.
+#
+# CÁCH: client gửi POST /tts hoặc /tts_batch kèm `"async": true` → server trả NGAY
+# 202 {"job_id": ...}; client hỏi GET /job/<id> mỗi vài giây (mỗi lần chỉ vài mili-giây):
+#   202 {"status": "running"}   — đang làm
+#   200 + nội dung thật         — xong (wav / zip, y hệt bản đồng bộ)
+#   4xx/5xx + {"error": ...}    — hỏng (y hệt bản đồng bộ)
+#   410                         — không có job này (server khởi động lại / quá hạn)
+# Server cũ không biết `async` thì cứ trả đồng bộ như trước — client tự nhận ra.
+ASYNC_JOBS: dict[str, dict] = {}
+ASYNC_LOCK = threading.Lock()
+ASYNC_KEEP_SEC = 1800.0
+
+
+def _async_gc() -> None:
+    now = time.time()
+    with ASYNC_LOCK:
+        for jid in [j for j, v in ASYNC_JOBS.items() if v["finished"] and now - v["finished"] > ASYNC_KEEP_SEC]:
+            ASYNC_JOBS.pop(jid, None)
+
+
+class _Shadow:
+    """Thay cho Handler khi chạy nền: gom phản hồi của route vào bộ nhớ thay vì ghi ra socket."""
+
+    _is_shadow = True
+    path = ""
+
+    def __init__(self, route: str, body: dict):
+        self.path = route
+        self._parsed = body
+        self.code = 200
+        self.headers_out: dict[str, str] = {}
+        self.wfile = io.BytesIO()
+
+    def _auth(self) -> bool:
+        return True
+
+    def _body(self) -> dict:
+        return self._parsed
+
+    def send_response(self, code, *_a) -> None:
+        self.code = int(code)
+
+    def send_header(self, k, v) -> None:
+        self.headers_out[str(k)] = str(v)
+
+    def end_headers(self) -> None:
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
+        self.code = code
+        self.headers_out["Content-Type"] = ctype
+        self.wfile.write(body)
+
+    def _json(self, code: int, obj) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+
+def _run_async(job_id: str, route: str, body: dict) -> None:
+    shadow = _Shadow(route, body)
+    try:
+        Handler.do_POST(shadow)  # type: ignore[arg-type]
+        res = {
+            "code": shadow.code,
+            "headers": shadow.headers_out,
+            "body": shadow.wfile.getvalue(),
+        }
+    except Exception as e:  # noqa: BLE001
+        res = {
+            "code": 500,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode("utf-8"),
+        }
+    with ASYNC_LOCK:
+        ASYNC_JOBS[job_id].update(result=res, finished=time.time())
+    print(f"[drama3] job {job_id} xong (HTTP {res['code']}, {len(res['body'])} byte)", flush=True)
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -917,8 +999,40 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _body(self) -> dict:
+        parsed = getattr(self, "_parsed", None)
+        if parsed is not None:
+            return parsed
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
+
+    def _start_async(self, route: str, d: dict) -> None:
+        """Nhận việc, trả 202 + job_id ngay; làm ở luồng nền (xem ASYNC_JOBS)."""
+        _async_gc()
+        job_id = uuid.uuid4().hex[:12]
+        body = {k: v for k, v in d.items() if k != "async"}
+        with ASYNC_LOCK:
+            ASYNC_JOBS[job_id] = {"route": route, "started": time.time(), "finished": 0.0, "result": None}
+        threading.Thread(target=_run_async, args=(job_id, route, body), daemon=True).start()
+        print(f"[drama3] job {job_id} nhận ({route}) — chạy nền", flush=True)
+        self._json(202, {"job_id": job_id})
+
+    def _job_status(self, job_id: str) -> None:
+        with ASYNC_LOCK:
+            j = ASYNC_JOBS.get(job_id)
+        if j is None:
+            self._json(410, {"error": "khong co job nay (server khoi dong lai hoac qua han)"})
+        elif j["result"] is None:
+            self._json(202, {"status": "running", "elapsed": round(time.time() - j["started"], 1)})
+        else:
+            r = j["result"]
+            self.send_response(r["code"])
+            for k, v in r["headers"].items():
+                if k.lower() != "content-length":
+                    self.send_header(k, v)
+            self.send_header("Content-Length", str(len(r["body"])))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(r["body"])
 
     def do_OPTIONS(self):  # noqa: N802
         self._send(204, b"", "text/plain")
@@ -927,7 +1041,10 @@ class Handler(BaseHTTPRequestHandler):
         assert POOL is not None
         route = self.path.split("?")[0].rstrip("/")
         if route == "/health":
-            self._json(200, {"ok": True, "gpu": gpu_info(), **POOL.stats()})
+            self._json(200, {"ok": True, "gpu": gpu_info(), "async_jobs": True, **POOL.stats()})
+        elif route.startswith("/job/"):
+            if self._auth():
+                self._job_status(route[len("/job/"):])
         elif route == "/voices":
             if self._auth():
                 self._json(200, {"voices": POOL.stats()["voices"]})
@@ -940,6 +1057,12 @@ class Handler(BaseHTTPRequestHandler):
         assert POOL is not None
         route = self.path.split("?")[0].rstrip("/")
         try:
+            if route in ("/tts", "/tts_batch") and not getattr(self, "_is_shadow", False):
+                d = self._body()
+                if d.get("async"):
+                    self._start_async(route, d)
+                    return
+                self._parsed = d  # route đồng bộ đọc lại qua _body()
             if route == "/voice":
                 d = self._body()
                 pcm = read_wav_bytes_44k(base64.b64decode(d["wav_b64"]))
