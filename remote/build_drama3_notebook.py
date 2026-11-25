@@ -298,13 +298,20 @@ else:
 """
 
 CELL_WATCH = """\
-# ── 7. Giữ phiên sống + tự dựng lại khi hỏng (ĐỂ Ô NÀY CHẠY LIÊN TỤC) ──────
+# ── 7. Giữ phiên sống + HIỆN LOG RENDER (ĐỂ Ô NÀY CHẠY LIÊN TỤC) ───────────
+# Cứ TICK giây: in dòng mới của log server (bắt đầu / xong từng đoạn, VRAM...) và,
+# khi đang render, in "ĐANG RENDER mm:ss". Mỗi CHECK_EVERY giây có thêm dòng tổng hợp.
 import json, os, re, subprocess, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 
 CHECK_EVERY = 60
+TICK = 5
 last_served = -1
+busy_since = None
+next_full = 0.0
+next_tunnel = 0.0
+LOG_POS = os.path.getsize(LOG) if os.path.exists(LOG) else 0
 
 def health():
     try:
@@ -324,11 +331,29 @@ def tunnel_alive() -> bool:
     except Exception:
         return False
 
-print(f"Theo dõi mỗi {CHECK_EVERY}s. Để ô này chạy liên tục.\\n", flush=True)
+def tail_log():
+    global LOG_POS
+    try:
+        if os.path.getsize(LOG) < LOG_POS:
+            LOG_POS = 0
+        with open(LOG, "rb") as f:
+            f.seek(LOG_POS)
+            data = f.read()
+            LOG_POS = f.tell()
+    except FileNotFoundError:
+        return
+    for line in data.decode("utf-8", "replace").splitlines():
+        if line.strip():
+            print(f"   | {line[:220]}", flush=True)
+
+print(f"Theo dõi: log mỗi {TICK}s, tổng hợp mỗi {CHECK_EVERY}s. Để ô này chạy liên tục.\\n", flush=True)
 while True:
-    h = health()
+    now = time.time()
     ts = datetime.now().strftime("%H:%M:%S")
+    tail_log()
+    h = health()
     if h is None:
+        busy_since = None
         print(f"[{ts}] SERVER CHẾT -> dựng lại...", flush=True)
         subprocess.run("pkill -f audiocpp_server || true", shell=True)
         with open(LOG, "ab") as f:
@@ -344,36 +369,51 @@ while True:
                 cwd=str(APP), start_new_session=True,
             )
         time.sleep(45)
+        tail_log()
         print(f"[{ts}] {'đã lên lại' if health() else 'VẪN CHƯA LÊN, xem ' + LOG}", flush=True)
     else:
-        d = h["served"] - last_served if last_served >= 0 else h["served"]
-        last_served = h["served"]
-        gb = h.get("gpu", {})
-        print(
-            f"[{ts}] busy={h['busy']} | queue={h['queued']} | done={h['served']} (+{d}) | "
-            f"err={h['failed']} | VRAM free={gb.get('vram_free_mib')} MiB",
-            flush=True,
-        )
+        if h["busy"]:
+            busy_since = busy_since or now
+            m, s = divmod(int(now - busy_since), 60)
+            print(
+                f"[{ts}] ĐANG RENDER {m:02d}:{s:02d} | xong {h['served']} | "
+                f"hàng đợi {h['queued']} | lỗi {h['failed']}",
+                flush=True,
+            )
+        else:
+            busy_since = None
+        if now >= next_full:
+            d = h["served"] - last_served if last_served >= 0 else h["served"]
+            last_served = h["served"]
+            next_full = now + CHECK_EVERY
+            gb = h.get("gpu", {})
+            print(
+                f"[{ts}] === busy={h['busy']} | queue={h['queued']} | done={h['served']} (+{d}) | "
+                f"err={h['failed']} | VRAM free={gb.get('vram_free_mib')} MiB ===",
+                flush=True,
+            )
 
-    if not tunnel_alive():
-        print(f"[{ts}] ĐƯỜNG HẦM ĐỨT -> mở lại...", flush=True)
-        subprocess.run("pkill -f cloudflared || true", shell=True)
-        time.sleep(2)
-        subprocess.Popen(
-            f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
-            "--no-autoupdate > /content/cloudflared.log 2>&1",
-            shell=True, start_new_session=True,
-        )
-        time.sleep(20)
-        m = re.search(
-            r"https://[a-z0-9-]+\\.trycloudflare\\.com",
-            Path("/content/cloudflared.log").read_text(errors="replace"),
-        )
-        if m and m.group(0) != URL:
-            URL = m.group(0)
-            print(f"[{ts}] URL MỚI: {URL}", flush=True)
+    if now >= next_tunnel:
+        next_tunnel = now + CHECK_EVERY
+        if not tunnel_alive():
+            print(f"[{ts}] ĐƯỜNG HẦM ĐỨT -> mở lại...", flush=True)
+            subprocess.run("pkill -f cloudflared || true", shell=True)
+            time.sleep(2)
+            subprocess.Popen(
+                f"/content/cloudflared tunnel --url http://127.0.0.1:{PORT} "
+                "--no-autoupdate > /content/cloudflared.log 2>&1",
+                shell=True, start_new_session=True,
+            )
+            time.sleep(20)
+            m = re.search(
+                r"https://[a-z0-9-]+\\.trycloudflare\\.com",
+                Path("/content/cloudflared.log").read_text(errors="replace"),
+            )
+            if m and m.group(0) != URL:
+                URL = m.group(0)
+                print(f"[{ts}] URL MỚI: {URL}  (dán lại vào app)", flush=True)
 
-    time.sleep(CHECK_EVERY)
+    time.sleep(TICK)
 """
 
 

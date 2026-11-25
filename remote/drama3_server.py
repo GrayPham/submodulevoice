@@ -708,9 +708,12 @@ class Drama3Engine:
 
         with self.lock:
             self.ensure_alive()
+            print(f"[drama3] >> Bắt đầu render đoạn {len(text)} ký tự "
+                  f"(có giọng mẫu={'có' if vq_json else 'không'})...", flush=True)
             t0 = time.monotonic()
             res = self._run_task({"text": tagged, "options": req_opts}, timeout=timeout)
             wall = time.monotonic() - t0
+            print(f"[drama3] << Render xong sau {wall:.1f}s", flush=True)
 
         _gi = gpu_info()
         if "vram_total_mib" in _gi:
