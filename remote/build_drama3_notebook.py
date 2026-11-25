@@ -130,14 +130,17 @@ else:
 CELL_START = """\
 #@title 4. Bật Server Fish Drama-3 { display-mode: "form" }
 #@markdown `auto` là đủ. Hết VRAM thì chọn `2.8gb`. `THREADS` = 0 nghĩa là tự theo số nhân CPU.
+#@markdown `CPU_EXPERT_LAYERS` = -1 là theo profile (T4: 24). Muốn nhanh hơn thì thử 16 rồi 12:
+#@markdown ít tầng hơn = nhanh hơn, tốn VRAM hơn (nếu OOM thì tăng lại), và giảm RAM máy.
 VRAM_MODE = "auto"  #@param ["auto", "2.8gb", "t4", "2.3gb", "3.3gb", "gpu"]
 PORT = 8770  #@param {type:"integer"}
 THREADS = 0  #@param {type:"integer"}
+CPU_EXPERT_LAYERS = -1  #@param {type:"integer"}
 
 import json, os, secrets, subprocess, time, urllib.request
 
 THREADS = THREADS or os.cpu_count() or 2
-print(f"VRAM_MODE={VRAM_MODE} | THREADS={THREADS}")
+print(f"VRAM_MODE={VRAM_MODE} | THREADS={THREADS} | CPU_EXPERT_LAYERS={CPU_EXPERT_LAYERS}")
 
 LOG = "/content/drama3_server.log"
 KEY_FILE = "/content/drama3_api_key.txt"
@@ -162,6 +165,7 @@ with open(LOG, "wb") as f:
             "--models-dir", str(MOD_DIR),
             "--vram-mode", VRAM_MODE,
             "--threads", str(THREADS),
+            "--cpu-expert-layers", str(CPU_EXPERT_LAYERS),
         ],
         stdout=f, stderr=subprocess.STDOUT, env=env, cwd=str(APP),
         start_new_session=True,
@@ -315,6 +319,7 @@ ENG_DIR = globals().get("ENG_DIR", Path("/content/drama3_engine"))
 MOD_DIR = globals().get("MOD_DIR", Path("/content/drama3_models"))
 VRAM_MODE = globals().get("VRAM_MODE", "auto")
 THREADS = globals().get("THREADS", os.cpu_count() or 2)
+CPU_EXPERT_LAYERS = globals().get("CPU_EXPERT_LAYERS", -1)
 if "API_KEY" not in globals():
     API_KEY = open("/content/drama3_api_key.txt").read().strip()
 if "URL" not in globals():
@@ -382,6 +387,7 @@ while True:
                     "--port", str(PORT), "--key", API_KEY,
                     "--engine-dir", str(ENG_DIR), "--models-dir", str(MOD_DIR),
                     "--vram-mode", VRAM_MODE, "--threads", str(THREADS),
+                    "--cpu-expert-layers", str(CPU_EXPERT_LAYERS),
                 ],
                 stdout=f, stderr=subprocess.STDOUT,
                 env=dict(os.environ, PYTHONUNBUFFERED="1"),

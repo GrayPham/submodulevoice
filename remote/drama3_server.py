@@ -867,6 +867,7 @@ class Drama3Pool:
                 "engine": "fish_drama3",
                 "model": self.engine.model_path.name,
                 "vram_mode": self.vram_mode,
+                "cpu_expert_layers": self.engine.session_options.get("cpu_expert_layers"),
                 "sample_rate": DRAMA3_SAMPLE_RATE,
                 "workers": 1,
                 "busy": self.busy,
@@ -1214,6 +1215,13 @@ def main() -> None:
         help="Cấu hình phân bổ VRAM/RAM cho Fish Drama-3 INT4",
     )
     ap.add_argument("--threads", type=int, default=6)
+    ap.add_argument(
+        "--cpu-expert-layers",
+        type=int,
+        default=-1,
+        help="Ghi đè số tầng expert (0-40) chạy trên CPU. -1 = theo profile (t4: 24). "
+        "Ít tầng hơn = nhanh hơn nhưng tốn VRAM hơn, đồng thời giảm RAM máy.",
+    )
     ap.add_argument("--backend", default="cuda", choices=["cuda", "cpu"])
     ap.add_argument("--default-vq", default=None, help="File JSON VQ cache mặc định nếu gọi /tts không voice_id")
     args = ap.parse_args()
@@ -1242,6 +1250,9 @@ def main() -> None:
         ram_avail_mib=ram_avail,
         is_slim=is_slim,
     )
+    if args.cpu_expert_layers >= 0:
+        sess_opts["cpu_expert_layers"] = min(40, args.cpu_expert_layers)
+        print(f"[server] Ghi đè cpu_expert_layers={sess_opts['cpu_expert_layers']}", flush=True)
     print(f"[server] Drama-3 profile='{chosen_mode}', model='{model_path.name}'", flush=True)
 
     default_vq_json = None
