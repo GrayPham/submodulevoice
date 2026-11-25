@@ -327,10 +327,49 @@ def pick_voice_audio(d: dict) -> str | None:
     return None
 
 
+def pick_instruct(d: dict) -> str | None:
+    """Cảm xúc/phong cách: chấp nhận instruct | emotion | style | direction."""
+    for k in ("instruct", "emotion", "style", "direction"):
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    return None
+
+
 def strip_structural_tokens(text: str) -> str:
     if not text:
         return ""
     return re.sub(r"<\|.*?\|>", "", text).strip()
+
+
+# Mô tả tiếng Việt -> thẻ tiếng Anh (model hiểu thẻ tiếng Anh chắc hơn). Thứ tự = ưu tiên hiển thị.
+_VI_EMOTION = [
+    ("nhẹ nhàng", "gentle, soft voice"), ("dịu dàng", "gentle, soft voice"),
+    ("êm ái", "soft voice"), ("êm", "soft voice"), ("thì thầm", "whispering"),
+    ("thầm thì", "whispering"), ("buồn", "sad"), ("khóc", "crying"),
+    ("nghẹn ngào", "sobbing"), ("giận dữ", "angry"), ("giận", "angry"),
+    ("tức giận", "angry"), ("hét", "shouting"), ("quát", "shouting"),
+    ("vui vẻ", "cheerful"), ("vui", "cheerful"), ("hào hứng", "excited"),
+    ("phấn khích", "excited"), ("cười", "laughing"), ("sợ hãi", "scared"),
+    ("sợ", "scared"), ("run rẩy", "trembling"), ("mệt mỏi", "tired"),
+    ("thở dài", "sighing"), ("lạnh lùng", "cold"), ("nghiêm túc", "serious"),
+    ("chậm rãi", "slow, calm"), ("chậm", "slow"), ("nhanh", "fast"),
+    ("trầm", "low, deep voice"), ("ấm áp", "warm"), ("ấm", "warm"),
+    ("tự tin", "confident"), ("mỉa mai", "sarcastic"), ("kể chuyện", "storytelling"),
+    ("trìu mến", "affectionate"), ("lo lắng", "anxious"), ("ngạc nhiên", "surprised"),
+    ("hồi hộp", "nervous"), ("bình tĩnh", "calm"), ("thân mật", "intimate, close"),
+]
+
+
+def vi_to_tags(note: str) -> str:
+    low = note.lower()
+    found: list[str] = []
+    for vi, en in _VI_EMOTION:
+        if re.search(rf"(?<!\w){re.escape(vi)}(?!\w)", low):
+            for t in en.split(", "):
+                if t not in found:
+                    found.append(t)
+    return ", ".join(found) if found else note
 
 
 def build_directed_text(text: str, instruct: str | None) -> str:
@@ -340,9 +379,11 @@ def build_directed_text(text: str, instruct: str | None) -> str:
     note = re.sub(r"\s+", " ", note).strip()[:140]
     if not note:
         return clean_text
-    if clean_text.lower().startswith("direction:") and "line:" in clean_text.lower():
-        return clean_text
-    return f"Direction: {note}\nLine: [{note}] {clean_text}"
+    note = vi_to_tags(note)
+    # Drama-3 hiểu thẻ ngoặc vuông nội dòng (vd [angry], [whispering], [sighs]).
+    # Một dòng duy nhất: tách thành nhiều dòng sẽ bị gắn <|speaker:0|> riêng và bị ĐỌC TO.
+    clean_text = re.sub(r"\s*\n+\s*", " ", clean_text)
+    return f"[{note}] {clean_text}"
 
 
 def format_speaker_tagged_text(raw_text: str) -> str:
@@ -1122,7 +1163,7 @@ class Handler(BaseHTTPRequestHandler):
                 job = Job(
                     text=d["text"],
                     voice_id=d.get("voice_id"),
-                    instruct=d.get("instruct"),
+                    instruct=pick_instruct(d),
                     temperature=float(d.get("temperature", DEFAULT_TEMPERATURE)),
                     top_p=float(d.get("top_p", DEFAULT_TOP_P)),
                     top_k=int(d.get("top_k", DEFAULT_TOP_K)),
@@ -1175,7 +1216,7 @@ class Handler(BaseHTTPRequestHandler):
                     j = Job(
                         text=it["text"],
                         voice_id=d.get("voice_id"),
-                        instruct=d.get("instruct"),
+                        instruct=pick_instruct(it) or pick_instruct(d),
                         temperature=float(d.get("temperature", DEFAULT_TEMPERATURE)),
                         top_p=float(d.get("top_p", DEFAULT_TOP_P)),
                         top_k=int(d.get("top_k", DEFAULT_TOP_K)),
