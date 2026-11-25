@@ -305,6 +305,25 @@ import json, os, re, subprocess, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 
+# Nếu Colab ngắt rồi nối lại mà kernel mất biến, tự khôi phục từ file/log trên đĩa.
+# Khi đó chỉ cần chạy lại ĐÚNG ô này (miễn là server còn chạy), không cần chạy lại ô 1-5.
+# Giữ TAB Colab mở và đừng để máy ngủ: Colab chỉ thu hồi phiên khi trình duyệt rảnh.
+PORT = globals().get("PORT", 8770)
+LOG = globals().get("LOG", "/content/drama3_server.log")
+APP = globals().get("APP", Path("/content/submodulevoice"))
+ENG_DIR = globals().get("ENG_DIR", Path("/content/drama3_engine"))
+MOD_DIR = globals().get("MOD_DIR", Path("/content/drama3_models"))
+VRAM_MODE = globals().get("VRAM_MODE", "auto")
+THREADS = globals().get("THREADS", os.cpu_count() or 2)
+if "API_KEY" not in globals():
+    API_KEY = open("/content/drama3_api_key.txt").read().strip()
+if "URL" not in globals():
+    _cf = Path("/content/cloudflared.log")
+    _m = re.search(r"https://[a-z0-9-]+\\.trycloudflare\\.com",
+                   _cf.read_text(errors="replace") if _cf.exists() else "")
+    URL = _m.group(0) if _m else None
+    print(f"URL khôi phục từ log: {URL}")
+
 CHECK_EVERY = 60
 TICK = 5
 last_served = -1
